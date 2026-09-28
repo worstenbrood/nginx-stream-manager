@@ -125,7 +125,7 @@ class GeneratorTests(unittest.TestCase):
         with self.assertRaises(nsm.Invalid): self.compile()
 
     def test_no_primary(self):
-        self.sections[2]['down'] = '1'; self.sections[3]['backup'] = '1'
+        self.sections[2]['backup'] = '1'; self.sections[3]['backup'] = '1'
         with self.assertRaises(nsm.Invalid): self.compile()
 
     def test_proxy_protocol_rejects_udp(self):

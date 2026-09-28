@@ -71,7 +71,7 @@ return view.extend({
             stateBox.replaceChildren(E('p', { 'class': 'alert-message warning' }, e.message));
         }); }, 5);
         return E('div', { 'class': 'cbi-map' }, [E('h2', {}, _('Nginx Stream Manager')), stateBox, buttons, detailBox,
-            E('p', {}, _('A reload drains old workers for up to 15 seconds. Long-lived TCP/UDP sessions may disconnect. Backend health detection is passive, not an active probe.')),
+            E('p', {}, _('A reload drains old workers until the configured graceful shutdown deadline. Long-lived TCP/UDP sessions may disconnect. Nginx failover uses passive detection; optional active probes in Monitoring do not change forwarding.')),
             E('p', {}, _('Configuration → Enable manager controls operation; Enable at boot separately controls startup after reboot.'))]);
     }
 });

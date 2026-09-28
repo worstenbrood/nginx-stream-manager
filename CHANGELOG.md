@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0 — 2026-09-28
+
+- Monitoring with optional TCP, verified TLS and DNS/UDP probes, bounded concurrency, consecutive success/failure thresholds and explicit stale results. Probes do not change forwarding.
+- Local alerts and optional syslog notifications for health, certificates, manager errors and archive storage; certificate names and expiry dates visible in LuCI.
+- Graphs for failed attempts, retries, connection time and session duration; CSV export and authenticated Prometheus text export.
+- Optional mounted storage with checkpoints and up to 30 days of hourly history. Bounded storage; a missing mount does not fall back to router flash.
+- Ten configuration snapshots, diff view, JSON export/import and service/pool duplication. Restore requires a fresh preview, a stopped manager and successful validation; no automatic restart.
+- Wildcard SNI with exact/longest-wildcard/default priority and a test field; diagnostics for modules, sockets, DNS and return routing.
+- New regressions and real TCP/TLS/DNS and Nginx wildcard tests; extended OpenWrt RPC acceptance.
+
+## 0.4.0 — 2026-09-28
+
+- Backup/down directly visible, working backup when the primary server is administratively down, additional hash/random balancers and configurable shared-memory zones.
+- DNS backends at start/reload and UNIX upstreams; transparent configurations remain restricted to literal IP addresses.
+- TLS termination, client certificates, upstream TLS with certificate verification enabled by default, TLS preread and routing by SNI/ALPN/TLS version/client network.
+- Incoming PROXY v1/v2, trusted proxy CIDRs, deny CIDRs, service/client connection limits, source-address binding, retry budget and socket options.
+- Service settings divided into six tabs; additional logging and worker settings.
+- Real Nginx/OpenWrt feature tests; corrected ARM SNI map size. Clear validation error when the installed stream module lacks real IP, even if nginx -V lists that option.
+- Feature matrix documents supported capabilities, version requirements and configuration forms not yet managed.
+- Fixed LuCI pool choices in edit dialogs; RPC accepts session metadata sent by authenticated LuCI requests.
+- Added screenshots of the real LuCI interface, including a traffic graph with synthetic demo data and a repeatable local preview environment.
+
 ## 0.3.0 — 2026-09-28
 
 - New Traffic view with graphs per load balancer/upstream, sent and received bytes, TCP/UDP filter and periods of 1, 6 or 24 hours.

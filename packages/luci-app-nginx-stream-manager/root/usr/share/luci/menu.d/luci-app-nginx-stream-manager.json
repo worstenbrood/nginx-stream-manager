@@ -32,6 +32,16 @@
     "order": 28,
     "action": { "type": "view", "path": "nsm/traffic" }
   },
+  "admin/services/nginx-stream-manager/monitor": {
+    "title": "Monitoring",
+    "order": 29,
+    "action": { "type": "view", "path": "nsm/monitor" }
+  },
+  "admin/services/nginx-stream-manager/tools": {
+    "title": "Configuration tools",
+    "order": 26,
+    "action": { "type": "view", "path": "nsm/tools" }
+  },
   "admin/services/nginx-stream-manager/logs": {
     "title": "Logs",
     "order": 30,

@@ -8,6 +8,6 @@ RUN wget -O /firmware.bin https://downloads.openwrt.org/releases/25.12.5/targets
 FROM scratch
 COPY --from=fetch /rootfs/ /
 RUN mkdir -p /var/lock && apk update \
-    && apk add python3 nginx-full nginx-mod-stream ip-full rpcd luci-base nftables-json firewall4 kmod-nft-socket
+    && apk add python3 nginx-full nginx-mod-stream ip-full rpcd luci-base nftables-json firewall4 kmod-nft-socket openssl-util
 WORKDIR /src
 CMD ["/bin/sh", "/src/tests/openwrt-userland.sh"]

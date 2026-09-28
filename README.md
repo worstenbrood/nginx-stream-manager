@@ -1,10 +1,16 @@
-# Nginx Stream Manager 0.3.0
+# Nginx Stream Manager 0.5.0
 
 Generic LuCI application for TCP/UDP load balancing on OpenWrt, with optional client-IP preservation through `proxy_bind $remote_addr transparent`.
 
-**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. The 0.3.0 APK packages were built with the 25.12.5 SDK and tested with real OpenWrt rpcd/procd, firewall4, TCP/UDP over IPv4/IPv6 and upstream traffic measurements on the host kernel. The earlier 0.2.1 version was also tested as a 24.10.5 IPK. The target router, reboot and full LuCI browser operation remain separate acceptance tests. See [test results](docs/TESTING.md), [build instructions](docs/BUILDING.md) and the [0.2.1 technical review](docs/REVIEW-0.2.1.md).
+**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. The 0.4.0 APK packages were built with the 25.12.5 SDK and tested with real OpenWrt rpcd/procd, firewall4, TCP/UDP over IPv4/IPv6 and upstream traffic measurements on the host kernel. The authenticated LuCI interface was checked in the browser, including configuration dialogs and the graph. The earlier 0.2.1 version was also tested as a 24.10.5 IPK. The target router, reboot and full on-device operation remain separate acceptance tests. See [test results](docs/TESTING.md), [build instructions](docs/BUILDING.md) and the [0.2.1 technical review](docs/REVIEW-0.2.1.md).
 
 ## Features
+
+New in 0.5.0: active TCP/TLS/DNS probes, health and certificate alerts, error/timing graphs, optional history on a mounted drive, CSV/Prometheus export, configuration snapshots with restore/import/duplication, wildcard SNI with a route test and a diagnostics page. See [monitoring and management](docs/OPERATIONS.md) for settings, limitations and recovery procedures.
+
+New settings and procedures are in [OPERATIONS.md](docs/OPERATIONS.md); current validation is in [TESTING.md](docs/TESTING.md).
+
+New in 0.4.0: extended failover/balancing, DNS/UNIX upstreams, TLS termination and upstream TLS, SNI/ALPN/client-network routing, incoming PROXY protocol, connection limits and socket options. See the [feature and compatibility overview](docs/STREAM-FEATURES.md), including limitations of the OpenWrt stream module.
 
 - LuCI: overview, configuration, service management, configuration preview, validation, live logs and import of existing Nginx streams.
 - Freely configurable TCP, UDP and combined services.
@@ -21,6 +27,18 @@ Generic LuCI application for TCP/UDP load balancing on OpenWrt, with optional cl
 - Dedicated Nginx instance under procd; automatic restart after a crash.
 - Log rotation and a viewer that reads only the tail, limited to 8,000 bytes per request.
 - Package dependencies, kernel modules, installation/removal scripts, OpenWrt package sources and tests.
+
+## Screenshots
+
+Real LuCI 0.4.0 interface in a local OpenWrt 25.12.5 test container. The graph contains **synthetic demo data**, not router traffic.
+
+Also available: [0.5.0 monitoring and connection-time graphs](docs/SCREENSHOTS.md), checked in the same local OpenWrt environment.
+
+![Traffic per upstream server](docs/screenshots/traffic.png)
+
+![Backend pools, backup server and services](docs/screenshots/configuration.png)
+
+Also see the [overview and TLS/SNI settings](docs/SCREENSHOTS.md).
 
 ## Quick installation
 

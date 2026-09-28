@@ -5,6 +5,7 @@ while :; do
 		/usr/libexec/nginx-stream-manager restore >/dev/null 2>&1
 	fi
 	/usr/libexec/nginx-stream-manager rotate >/dev/null 2>&1
+	/usr/libexec/nginx-stream-manager monitor-tick >/dev/null 2>&1
 	sleep 30 &
 	wait "$!"
 done

@@ -86,6 +86,10 @@ def check(directory):
                 assert mode & 0o111 and content.startswith(b'#!') and b'\r' not in content, filename
             assert b"option enabled '0'" in data['etc/config/nginx_stream_manager'][1]
             assert 'usr/libexec/nsm_importer.py' in data
+            assert 'usr/libexec/nsm_ops.py' in data
+            source_root = Path(__file__).resolve().parents[1] / 'packages/nginx-stream-manager/files'
+            for installed, source in (('nginx-stream-manager', 'nsm.py'), ('nsm_ops.py', 'nsm_ops.py'), ('nsm_importer.py', 'nsm_importer.py')):
+                assert data['usr/libexec/' + installed][1] == (source_root/source).read_bytes(), 'Stale backend payload: ' + installed
             assert 'etc/nginx/nginx.conf' not in data
             assert b'/etc/config/nginx_stream_manager' in package['control']['conffiles'][1]
             for dep in ('nginx', 'nginx-mod-stream', 'python3', 'ip-full', 'nftables-json', 'firewall4', 'kmod-nft-socket', 'rpcd'):
@@ -93,8 +97,10 @@ def check(directory):
         else:
             for dep in ('luci-base', 'nginx-stream-manager'):
                 assert dep in fields['Depends'].split(', '), (dep, fields['Depends'])
-            for filename in ('config', 'overview', 'logs', 'import', 'traffic'):
+            for filename in ('config', 'overview', 'logs', 'import', 'traffic', 'monitor', 'tools'):
                 assert 'www/luci-static/resources/view/nsm/' + filename + '.js' in data
+                source = Path(__file__).resolve().parents[1] / 'packages/luci-app-nginx-stream-manager/htdocs/luci-static/resources/view/nsm' / (filename + '.js')
+                assert data['www/luci-static/resources/view/nsm/' + filename + '.js'][1] == source.read_bytes(), 'Stale frontend payload: ' + filename
             for directory in ('usr/share/rpcd/acl.d', 'usr/share/luci/menu.d'):
                 assert directory + '/luci-app-nginx-stream-manager.json' in data
             for filename, (_, content) in data.items():

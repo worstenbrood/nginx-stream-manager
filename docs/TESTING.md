@@ -1,5 +1,48 @@
 # Validation and test status
 
+## Monitoring and management — 0.5.0
+
+Date: 28 September 2026.
+
+- 132 unit/regression tests passed, including real local TCP, TLS certificate-name and DNS probes, configuration preview/restore, hysteresis, snapshots of the applied configuration and archive checkpoints.
+- Eleven Nginx stream feature tests on Alpine and eleven on OpenWrt 25.12.5/Nginx 1.26.3 passed, including exact/longest-wildcard/default SNI priority with real TLS connections. The OpenWrt real-IP test checks the expected rejection of the missing module.
+- The extended manual installation test on OpenWrt 25.12.5 passed: real RPC/procd/firewall4, IPv4/IPv6 TCP/UDP, byte/timing measurements, metrics export, working snapshots, blocked restore while the manager is running, monitoring, diagnostics and restoration after stop.
+- Archive storage tested on a real temporary tmpfs mount: checkpoint/restore without double counting, seven-day history and no fallback to flash when the mount is missing.
+- Syntax checks passed for eleven shell scripts plus package hooks, seven JavaScript files and two JSON files. JavaScript regressions for pool choices, mean timings and missing samples pass, including after the latest UI text changes.
+- Real authenticated LuCI interface checked: probe settings, health and certificate warnings, diagnostics, duplication preview, blocking during operation, duplication after stop, wildcard SNI route test and timing graph. New [screenshots](SCREENSHOTS.md) show monitoring and a graph with synthetic demo data.
+- A 0.5.0 APK build with the official 25.12.5 SDK and package acceptance passed, including installation, runtime tests and removal. Local artifacts are in `artifacts/0.5.0-openwrt-25.12.5/`. Only UI help text, singular period labels and the accessible graph title changed afterwards. The final rebuild was not confirmed because Docker became unreachable; existing APKs must therefore not be treated as exact artifacts of this commit. The new byte comparison between package payload and source must still pass at the next build.
+
+`sh tests/validate-0.5.sh` repeats Linux tests, OpenWrt tests, the official SDK build and package acceptance using the local test images. No new 24.10.5 IPK was built. The container uses the host kernel and cannot create procd cgroups; router and reboot acceptance remain separately required.
+
+Nothing was installed or changed on the ASUS router. See [operation, settings and limitations](OPERATIONS.md).
+
+## Stream extension — 0.4.0
+
+Date: 28 September 2026.
+
+- 116 unit/regression/shell contract tests passed.
+- Both final 0.4.0-r1 APK packages built with the official OpenWrt 25.12.5 SDK for mediatek/filogic. Metadata and payload checked; installation, RPC/procd, firewall4, TCP/UDP forwarding over IPv4/IPv6, exact upstream byte volumes, rejected reload and removal using these APKs passed. Artifacts, checksums and reports are local in `artifacts/0.4.0-openwrt-25.12.5/`. No new 24.10.5 IPK built. The container cannot create procd cgroups; this host-environment limitation does not replace a router/reboot test.
+- 10 shell scripts plus package hooks, 5 LuCI JavaScript files and 2 JSON files passed syntax checks; an additional JavaScript regression for pool choices in cloned edit dialogs passed.
+- All seven existing Linux integration tests passed, including real transparent TCP/UDP connections over IPv4/IPv6.
+- Ten new feature tests on Alpine/Nginx: backup on connection failure and a down primary, TLS/mTLS, upstream certificate verification and hostname rejection, SNI/ALPN routing, trusted PROXY/client-network routing, per-client connection limits and syntax of new balancers/socket options.
+- The same ten tests ran on OpenWrt 25.12.5/Nginx 1.26.3. There, the real-IP test checks explicit rejection of the missing stream real-IP module; it does not prove address replacement on that build. The other nine tests pass positively. The first check found an undersized ARM map bucket; the generator was adjusted accordingly.
+- Real LuCI 25.12.5 in a local container: sign-in, configuration loading, service editing, six tabs, TLS/preread and SNI selection, saving and reopening checked. This found and fixed an empty pool selector in edit dialogs and rejected RPC session metadata. The running manager and traffic graph were then checked through the authenticated LuCI session. Only the disposable container was changed; the test listener binds to loopback. [Screenshots](SCREENSHOTS.md) use synthetic traffic history.
+
+The test environment uses the host kernel. No changes or reboot were performed on the ASUS router. See [compatibility and remaining limitations](STREAM-FEATURES.md).
+
+Repeating the feature tests:
+
+```sh
+docker build -t nsm-test:0.4.0 -f tests/Dockerfile .
+docker run --rm --cap-add NET_ADMIN --cap-add SYS_PTRACE \
+  -v "$PWD:/src:ro" nsm-test:0.4.0 python3 tests/integration_features.py
+docker run --rm --cap-add NET_ADMIN --cap-add SYS_PTRACE \
+  -e NSM_EXPECT_NO_STREAM_REALIP=1 -v "$PWD:/src:ro" \
+  nsm-openwrt-userland:25.12.5 python3 /src/tests/integration_features.py
+```
+
+The second command variant expects only the confirmed missing real-IP module in this OpenWrt feed. On a build with that module, omit `NSM_EXPECT_NO_STREAM_REALIP`. OpenSSL CLI is only a test dependency for generating temporary self-signed certificates.
+
 ## New traffic feature — 0.3.0
 
 Date: 28 September 2026.
@@ -110,7 +153,7 @@ The SDK builds only the two script packages, with LuCI minification disabled. Ru
 
 ## Still to validate on the target router
 
-No real OpenWrt router or browser LuCI session was used. These checks remain outstanding:
+The original 0.2.1 validation used no real OpenWrt router or browser LuCI session. Additional container and browser checks for 0.3.0/0.4.0 are described above; target-router acceptance remains necessary:
 
 - installation through target-device feeds;
 - installation of the built packages on the target router;

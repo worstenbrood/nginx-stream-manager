@@ -10,7 +10,10 @@
           "status",
           "preview",
           "logs",
-          "traffic"
+          "traffic",
+          "monitor",
+          "metrics",
+          "route_test"
         ]
       }
     },
@@ -23,7 +26,10 @@
           "validate",
           "control",
           "import_preview",
-          "import_commit"
+          "import_commit",
+          "config_tools",
+          "monitor_refresh",
+          "diagnostics"
         ]
       }
     }

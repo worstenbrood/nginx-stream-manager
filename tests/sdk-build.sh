@@ -14,7 +14,7 @@ else
     ./scripts/feeds update -a
 fi
 # Only install source recipes needed by these two packages and their dependencies.
-./scripts/feeds install nginx nginx-mod-stream python3 ip-full nftables-json firewall4 kmod-nft-socket rpcd luci-base
+./scripts/feeds install nginx nginx-mod-stream python3 openssl-util ca-bundle ip-full nftables-json firewall4 kmod-nft-socket rpcd luci-base
 for name in nginx-stream-manager luci-app-nginx-stream-manager; do
     if [ -e "package/$name" ]; then
         [ "${SDK_REUSE_FEEDS:-0}" = 1 ] && [ ! -L "package/$name" ] || {

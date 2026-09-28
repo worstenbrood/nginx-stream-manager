@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nginx-stream-manager
-PKG_VERSION:=0.3.0
+PKG_VERSION:=0.5.0
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
 
@@ -12,7 +12,7 @@ define Package/nginx-stream-manager
   CATEGORY:=Network
   TITLE:=Generic Nginx TCP/UDP stream manager
   PKGARCH:=all
-  DEPENDS:=+nginx +nginx-mod-stream +python3 +ip-full +nftables-json +firewall4 +kmod-nft-socket +rpcd
+  DEPENDS:=+nginx +nginx-mod-stream +python3 +openssl-util +ca-bundle +ip-full +nftables-json +firewall4 +kmod-nft-socket +rpcd
 endef
 
 define Package/nginx-stream-manager/description
@@ -35,6 +35,7 @@ define Package/nginx-stream-manager/install
 	$(INSTALL_DIR) $(1)/usr/libexec/rpcd $(1)/etc/config $(1)/etc/init.d
 	$(INSTALL_DIR) $(1)/etc/hotplug.d/iface $(1)/usr/share/nftables.d/chain-pre/input
 	$(INSTALL_DATA) ./files/nsm_importer.py $(1)/usr/libexec/nsm_importer.py
+	$(INSTALL_DATA) ./files/nsm_ops.py $(1)/usr/libexec/nsm_ops.py
 	$(INSTALL_BIN) ./files/nsm.py $(1)/usr/libexec/nginx-stream-manager
 	$(INSTALL_BIN) ./files/maintenance $(1)/usr/libexec/nginx-stream-manager-maintenance
 	$(INSTALL_BIN) ./files/rpc $(1)/usr/libexec/rpcd/luci.nginx-stream-manager

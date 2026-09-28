@@ -1,5 +1,5 @@
 FROM alpine:3.23
-RUN apk add --no-cache nginx nginx-mod-stream python3 nftables iproute2 nodejs
+RUN apk add --no-cache nginx nginx-mod-stream python3 nftables iproute2 nodejs openssl
 ARG UCI_REV=74f6277aabffc943d026f406df57c22595134c42
 RUN apk add --no-cache --virtual .build build-base cmake git libubox-dev \
     && git init /tmp/uci \

@@ -17,7 +17,7 @@ if [ -x /etc/init.d/nginx-stream-manager ]; then
     fi
     /usr/libexec/nginx-stream-manager cleanup
 fi
-packages='luci-base nginx-mod-stream python3 ip-full nftables-json firewall4 kmod-nft-socket'
+packages='luci-base nginx-mod-stream python3 openssl-util ca-bundle ip-full nftables-json firewall4 kmod-nft-socket'
 # Keep an existing nginx provider instead of forcing a conflicting variant.
 command -v nginx >/dev/null 2>&1 || packages="$packages nginx-full"
 if command -v apk >/dev/null 2>&1; then
@@ -34,6 +34,7 @@ mkdir -p /usr/libexec/rpcd /usr/share/nftables.d/chain-pre/input /etc/hotplug.d/
 mkdir -p /www/luci-static/resources/view/nsm /usr/share/luci/menu.d /usr/share/rpcd/acl.d
 src="$base/packages/nginx-stream-manager/files"
 cp "$src/nsm_importer.py" /usr/libexec/nsm_importer.py
+cp "$src/nsm_ops.py" /usr/libexec/nsm_ops.py
 cp "$src/nsm.py" /usr/libexec/nginx-stream-manager
 cp "$src/maintenance" /usr/libexec/nginx-stream-manager-maintenance
 cp "$src/rpc" /usr/libexec/rpcd/luci.nginx-stream-manager

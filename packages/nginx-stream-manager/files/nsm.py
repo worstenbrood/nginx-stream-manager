@@ -17,8 +17,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 
-VERSION = '0.3.0'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import nsm_ops
+
+VERSION = '0.5.0'
 RUN = Path('/var/run/nginx-stream-manager')
 LOG = Path('/var/log/nginx-stream-manager')
 CONFIG = 'nginx_stream_manager'
@@ -33,6 +37,27 @@ INIT = '/etc/init.d/nginx-stream-manager'
 
 class Invalid(ValueError):
     pass
+
+def ops():
+    return nsm_ops.Operations(types.SimpleNamespace(**globals()))
+
+def working_snapshot():
+    try:
+        raw = (state() or {}).get('source_config')
+        if raw is not None:
+            ops().snapshot('working', raw.encode())
+            (RUN / 'snapshot-error').unlink(missing_ok=True)
+    except Exception as error:
+        atomic(RUN / 'snapshot-error', str(error)[:500])
+
+def monitor_tick():
+    RUN.mkdir(parents=True, exist_ok=True)
+    with (RUN / 'monitor.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'ok': True, 'message': 'Monitoring is already running.'}
+        return ops().tick()
 
 def command(args, check=True, timeout=8, data=None):
     p = subprocess.run(args, input=data, text=True, stdout=subprocess.PIPE,
@@ -107,7 +132,150 @@ def bounded_read(path, limit):
         raise Invalid('%s exceeds the %d byte limit' % (path, limit))
     return data
 
+
+def hostname(value):
+    text = str(value).lower().rstrip('.')
+    if len(text) > 253 or not text or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in text.split('.')):
+        raise Invalid('Invalid DNS name: ' + str(value))
+    return text
+
+
+def file_path(value):
+    # Literal paths only: no variables, whitespace, quotes or config delimiters.
+    if not re.fullmatch(r'/[A-Za-z0-9_./:@+-]{1,240}', str(value)) or '..' in str(value).split('/'):
+        raise Invalid('Use an absolute literal file path without spaces')
+    return str(value)
+
+
+def choice(obj, key, allowed, default):
+    value = obj.get(key, default)
+    if value not in allowed:
+        raise Invalid('Invalid ' + key)
+    return value
+
+
+def stream_options(s):
+    """Typed options supported by the router's OSS Nginx 1.26.3 baseline."""
+    server, stream, listen = [], [], []
+    tcp = s['protocol'] == 'tcp'
+    sid = s['sid']
+    def emit(name, value):
+        server.append('    %s %s;' % (name, value))
+    for key, default, lo, hi, suffix in (
+            ('next_upstream_timeout', 0, 0, 604800, 's'),
+            ('proxy_buffer_size', 16384, 1024, 16777216, ''),
+            ('preread_buffer_size', 16384, 1024, 16777216, ''),
+            ('preread_timeout', 30, 1, 300, 's')):
+        directive = 'proxy_' + key if key == 'next_upstream_timeout' else key
+        emit(directive, str(integer(s.get(key, default), lo, hi, key)) + suffix)
+    emit('proxy_next_upstream', 'on' if flag(s, 'next_upstream', '1') else 'off')
+    emit('tcp_nodelay', 'on' if flag(s, 'tcp_nodelay', '1') else 'off')
+    bind = s.get('bind_address', '')
+    if bind:
+        if s['transparent']:
+            raise Invalid('Local source bind and transparent mode cannot be combined')
+        ip = address(bind)
+        if ip.is_unspecified or ip.is_multicast:
+            raise Invalid('Local source bind must be unicast')
+        emit('proxy_bind', str(ip))
+    for key in ('rcvbuf', 'sndbuf', 'backlog', 'fastopen'):
+        if s.get('listen_' + key, '') != '':
+            if key in ('backlog', 'fastopen') and not tcp:
+                raise Invalid(key + ' requires a TCP-only service')
+            listen.append('%s=%d' % (key, integer(s['listen_' + key], 1, 16777216 if key.endswith('buf') else 65535, key)))
+    if flag(s, 'listen_deferred'):
+        if not tcp:
+            raise Invalid('Deferred accept requires TCP')
+        listen.append('deferred')
+    keepalive = choice(s, 'listen_keepalive', ('default', 'on', 'off'), 'default')
+    if keepalive != 'default':
+        if not tcp:
+            raise Invalid('Listener keepalive requires TCP')
+        listen.append('so_keepalive=' + keepalive)
+    incoming = flag(s, 'accept_proxy_protocol')
+    trusted = values(s, 'trusted_proxy')
+    if incoming:
+        if not tcp:
+            raise Invalid('Incoming PROXY protocol requires TCP')
+        listen.append('proxy_protocol')
+        emit('proxy_protocol_timeout', '%ds' % integer(s.get('proxy_protocol_timeout', 30), 1, 300, 'PROXY timeout'))
+    if trusted and not incoming:
+        raise Invalid('Trusted proxies require incoming PROXY protocol')
+    for net in trusted:
+        try:
+            network = ipaddress.ip_network(net, strict=False)
+        except ValueError:
+            raise Invalid('Invalid trusted proxy CIDR')
+        if network.prefixlen == 0:
+            raise Invalid('Trusted proxies must not trust every address')
+        emit('set_real_ip_from', str(network))
+    for key, variable in (('limit_connections', '$server_addr'), ('limit_per_client', '$binary_remote_addr')):
+        count = integer(s.get(key, 0), 0, 65535, key)
+        if count:
+            name = key + '_' + sid
+            size = integer(s.get('limit_zone_kb', 64), 32, 16384, 'Limit zone KiB')
+            stream.append('  limit_conn_zone %s zone=%s:%dk;' % (variable, name, size))
+            emit('limit_conn', '%s %d' % (name, count))
+    if s.get('limit_connections', '0') != '0' or s.get('limit_per_client', '0') != '0':
+        emit('limit_conn_dry_run', 'on' if flag(s, 'limit_dry_run') else 'off')
+    tls = choice(s, 'tls_mode', ('off', 'terminate', 'preread'), 'off')
+    if tls != 'off' and not tcp:
+        raise Invalid('TLS requires a TCP-only service')
+    if tls == 'preread':
+        emit('ssl_preread', 'on')
+    if tls == 'terminate':
+        listen.append('ssl')
+        for key in ('ssl_certificate', 'ssl_certificate_key'):
+            emit(key, file_path(s.get(key, '')))
+        emit('ssl_handshake_timeout', '%ds' % integer(s.get('ssl_handshake_timeout', 60), 1, 300, 'TLS handshake timeout'))
+        emit('ssl_session_cache', 'shared:tls_%s:%dk' % (sid, integer(s.get('ssl_session_cache_kb', 1024), 64, 16384, 'TLS cache KiB')))
+        emit('ssl_session_timeout', '%ds' % integer(s.get('ssl_session_timeout', 300), 1, 86400, 'TLS session timeout'))
+        emit('ssl_session_tickets', 'on' if flag(s, 'ssl_session_tickets') else 'off')
+        emit('ssl_prefer_server_ciphers', 'on' if flag(s, 'ssl_prefer_server_ciphers') else 'off')
+        verify = choice(s, 'ssl_verify_client', ('off', 'on', 'optional', 'optional_no_ca'), 'off')
+        emit('ssl_verify_client', verify)
+        if verify != 'off':
+            emit('ssl_client_certificate', file_path(s.get('ssl_client_certificate', '')))
+            emit('ssl_verify_depth', integer(s.get('ssl_verify_depth', 2), 1, 20, 'Client certificate depth'))
+        for key in ('ssl_dhparam', 'ssl_crl', 'ssl_trusted_certificate', 'ssl_password_file', 'ssl_session_ticket_key'):
+            if s.get(key):
+                emit(key, file_path(s[key]))
+        for key in ('ssl_alpn', 'ssl_ecdh_curve'):
+            if s.get(key):
+                if not re.fullmatch(r'[A-Za-z0-9_./:+ -]{1,256}', s[key]):
+                    raise Invalid('Invalid ' + key)
+                emit(key, s[key])
+    upstream_tls = flag(s, 'upstream_tls')
+    if upstream_tls:
+        if not tcp:
+            raise Invalid('Upstream TLS requires TCP')
+        emit('proxy_ssl', 'on')
+        emit('proxy_ssl_server_name', 'on')
+        emit('proxy_ssl_name', hostname(s.get('proxy_ssl_name', '')))
+        verify = flag(s, 'proxy_ssl_verify', '1')
+        emit('proxy_ssl_verify', 'on' if verify else 'off')
+        if verify:
+            emit('proxy_ssl_trusted_certificate', file_path(s.get('proxy_ssl_trusted_certificate', '')))
+        emit('proxy_ssl_verify_depth', integer(s.get('proxy_ssl_verify_depth', 2), 1, 20, 'Upstream certificate depth'))
+        emit('proxy_ssl_session_reuse', 'on' if flag(s, 'proxy_ssl_session_reuse', '1') else 'off')
+        if s.get('proxy_ssl_certificate') or s.get('proxy_ssl_certificate_key'):
+            for key in ('proxy_ssl_certificate', 'proxy_ssl_certificate_key'):
+                emit(key, file_path(s.get(key, '')))
+        for key in ('proxy_ssl_crl', 'proxy_ssl_password_file'):
+            if s.get(key):
+                emit(key, file_path(s[key]))
+    for prefix, active in (('ssl_', tls == 'terminate'), ('proxy_ssl_', upstream_tls)):
+        if active:
+            protocols = choice(s, prefix + 'protocols', ('TLSv1.2', 'TLSv1.3', 'TLSv1.2 TLSv1.3'), 'TLSv1.2 TLSv1.3')
+            emit(prefix + 'protocols', protocols)
+            ciphers = s.get(prefix + 'ciphers', 'HIGH:!aNULL:!MD5')
+            if not re.fullmatch(r'[A-Za-z0-9_:+!@=.-]{1,512}', ciphers):
+                raise Invalid('Invalid TLS cipher list')
+            emit(prefix + 'ciphers', ciphers)
+    return stream, server, listen
+
 def compile_config(sections, module=True):
+    nsm_ops.validate(types.SimpleNamespace(**globals()), sections)
     names = [s['.name'] for s in sections]
     if len(names) != len(set(names)):
         raise Invalid('Duplicate UCI section names')
@@ -126,20 +294,38 @@ def compile_config(sections, module=True):
     if nofile < connections:
         raise Invalid('File descriptor limit must be >= worker connections')
     log_mb = integer(g.get('log_mb', 4), 1, 128, 'Log rotation size')
+    shutdown_timeout = integer(g.get('shutdown_timeout', 15), 0, 604800, 'Worker shutdown timeout')
     pools, backends = {}, {}
     warnings = []
     for s in sections:
         sid = ident(s['.name'])
         if s['.type'] == 'pool':
             method = s.get('method', 'round_robin')
-            if method not in ('round_robin', 'least_conn', 'hash_ip'):
+            if method not in ('round_robin', 'least_conn', 'hash_ip', 'hash', 'hash_consistent', 'random', 'random_two'):
                 raise Invalid('Invalid pool method')
             pools[sid] = dict(s, method=method)
+            pools[sid]['zone_kb'] = integer(s.get('zone_kb', 64), 32, 16384, 'Upstream zone KiB')
+            if method in ('hash', 'hash_consistent'):
+                pools[sid]['hash_key'] = choice(s, 'hash_key', ('$remote_addr', '$remote_addr:$remote_port', '$server_addr:$server_port', '$ssl_preread_server_name', '$ssl_server_name', '$proxy_protocol_addr'), '$remote_addr')
         elif s['.type'] == 'backend' and flag(s, 'enabled', '1'):
-            ip = address(s.get('address', ''))
-            if ip.is_unspecified or ip.is_multicast:
-                raise Invalid('Backend must be a unicast address')
-            b = {'ip': ip, 'port': integer(s.get('port', ''), 1, 65535, 'Backend port'),
+            raw = s.get('address', '')
+            ip, port = None, 0
+            if raw.startswith('unix:'):
+                target = 'unix:' + file_path(raw[5:])
+                if len(raw[5:]) > 100:
+                    raise Invalid('UNIX socket path is too long')
+            else:
+                port = integer(s.get('port', ''), 1, 65535, 'Backend port')
+                try:
+                    ip = address(raw)
+                except Invalid:
+                    target = hostname(raw) + ':' + str(port)
+                    warnings.append('%s: hostname resolved by Nginx at start/reload only' % sid)
+                else:
+                    if ip.is_unspecified or ip.is_multicast:
+                        raise Invalid('Backend must be a unicast address')
+                    target = endpoint(ip, port)
+            b = {'ip': ip, 'port': port, 'target': target,
                  'weight': integer(s.get('weight', 1), 1, 1000, 'Weight'),
                  'max_fails': integer(s.get('max_fails', 1), 0, 1000, 'Max failures'),
                  'fail_timeout': integer(s.get('fail_timeout', 10), 1, 86400, 'Failure timeout'),
@@ -149,8 +335,17 @@ def compile_config(sections, module=True):
     for name, bs in backends.items():
         if name not in pools:
             raise Invalid('Backend refers to missing pool: ' + name)
-        if pools[name]['method'] == 'hash_ip' and any(b['backup'] for b in bs):
-            raise Invalid('NGINX hash pools do not support backup backends')
+        if pools[name]['method'] in ('hash_ip', 'hash', 'hash_consistent', 'random', 'random_two') and any(b['backup'] for b in bs):
+            raise Invalid('NGINX hash/random pools do not support backup backends')
+    routes = {}
+    service_names = {s['.name'] for s in sections if s['.type'] == 'service'}
+    for route in sections:
+        if route['.type'] != 'route' or not flag(route, 'enabled', '1'):
+            continue
+        service = route.get('service', '')
+        if service not in service_names or route.get('pool', '') not in pools:
+            raise Invalid('Route refers to a missing service or pool')
+        routes.setdefault(service, []).append(route)
     services, bound, returns, families, firewall = [], [], set(), set(), []
     for s in sections:
         if s['.type'] != 'service' or not flag(s, 'enabled', '1'):
@@ -159,9 +354,13 @@ def compile_config(sections, module=True):
         if sid == 'manager':
             raise Invalid('Service name manager is reserved for the manager log')
         pool = s.get('pool', '')
-        bs = backends.get(pool, [])
-        if pool not in pools or not any(not b['down'] and not b['backup'] for b in bs):
-            raise Invalid('Service %s needs a pool with an active primary backend' % sid)
+        targets = {pool} | {r['pool'] for r in routes.get(sid, [])}
+        bs = []
+        for target in targets:
+            group = backends.get(target, [])
+            if target not in pools or not any(not b['backup'] for b in group) or not any(not b['down'] for b in group):
+                raise Invalid('Service %s needs each pool to have a primary backend and an available server' % sid)
+            bs.extend(group)
         ip = address(s.get('listen_address', '0.0.0.0'))
         if ip.is_multicast:
             raise Invalid('Multicast listeners are unsupported')
@@ -171,6 +370,8 @@ def compile_config(sections, module=True):
             raise Invalid('Invalid protocol')
         protos = ['tcp', 'udp'] if protocol == 'both' else [protocol]
         transparent = flag(s, 'transparent')
+        if transparent and any(b['ip'] is None for b in bs):
+            raise Invalid('Transparent mode requires literal IP backends, including routed pools')
         ifaces = values(s, 'return_interface')
         for iface in ifaces:
             if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}', iface) or iface == 'lo':
@@ -198,6 +399,15 @@ def compile_config(sections, module=True):
             if n.version != ip.version:
                 raise Invalid('Client CIDR family must match listener family')
             networks.append(str(n))
+        denied = []
+        for net in values(s, 'deny_source'):
+            try:
+                n = ipaddress.ip_network(net, strict=False)
+            except ValueError:
+                raise Invalid('Invalid denied client CIDR')
+            if n.version != ip.version:
+                raise Invalid('Denied CIDR family must match listener family')
+            denied.append(str(n))
         if flag(s, 'open_firewall'):
             ingress = values(s, 'ingress_interface')
             if not ingress:
@@ -212,8 +422,17 @@ def compile_config(sections, module=True):
                 if not ip.is_unspecified:
                     rule += family + ' daddr ' + str(ip) + ' '
                 rule += '%s dport %d ' % (proto, port)
-                if networks:
-                    rule += family + ' saddr { ' + ', '.join(networks) + ' } '
+                firewall_networks = networks
+                if flag(s, 'accept_proxy_protocol') and values(s, 'trusted_proxy'):
+                    try:
+                        peers = [ipaddress.ip_network(n, strict=False) for n in values(s, 'trusted_proxy')]
+                    except ValueError:
+                        raise Invalid('Invalid trusted proxy CIDR')
+                    firewall_networks = [str(n) for n in peers if n.version == ip.version]
+                    if not firewall_networks:
+                        raise Invalid('Firewall needs a trusted proxy matching the listener IP family')
+                if firewall_networks:
+                    rule += family + ' saddr { ' + ', '.join(firewall_networks) + ' } '
                 firewall.append(rule + 'counter accept comment "nsm-listener-%s"' % sid)
         for proto in protos:
             for prev, pp, pproto in bound:
@@ -221,10 +440,13 @@ def compile_config(sections, module=True):
                     raise Invalid('Overlapping listener: ' + endpoint(ip, port) + '/' + proto)
             bound.append((ip, port, proto))
         for b in bs:
-            if b['port'] == port and (b['ip'] == ip or (ip.is_unspecified and b['ip'].is_loopback)):
+            if b['ip'] is not None and b['port'] == port and (b['ip'] == ip or (ip.is_unspecified and b['ip'].is_loopback)):
                 raise Invalid('Listener points back to itself: ' + sid)
+            if b['target'].startswith('unix:') and protocol != 'tcp':
+                raise Invalid('UNIX upstreams require a TCP-only service')
         item = dict(s, sid=sid, ip=ip, port=port, protocol=protocol, protos=protos, transparent=transparent,
-                    networks=networks, pool=pool)
+                    networks=networks, denied=denied, pool=pool)
+        item['error_level'] = choice(s, 'error_level', ('debug', 'info', 'notice', 'warn', 'error', 'crit', 'alert', 'emerg'), 'warn')
         for key, default, lo, hi in [('connect_timeout', 5, 1, 300), ('timeout', 600, 1, 604800),
                                      ('next_upstream_tries', 0, 0, 100), ('upload_rate', 0, 0, 2147483647),
                                      ('download_rate', 0, 0, 2147483647), ('udp_requests', 0, 0, 1000000)]:
@@ -235,6 +457,55 @@ def compile_config(sections, module=True):
             item[key] = flag(s, key)
         if item['proxy_protocol'] and 'udp' in protos:
             raise Invalid('PROXY protocol output is supported for TCP services only')
+        item['extras'] = stream_options(item)
+        item['targets'] = targets
+        routing = choice(s, 'routing', ('none', 'sni', 'alpn', 'source', 'tls_protocol'), 'none')
+        if routes.get(sid) and routing == 'none':
+            raise Invalid('Enable routing before adding routes to service ' + sid)
+        if routing in ('sni', 'alpn', 'tls_protocol') and (protocol != 'tcp' or s.get('tls_mode', 'off') == 'off'):
+            raise Invalid('TLS routing requires TLS termination or preread on a TCP service')
+        item['routing_lines'] = []
+        if routing != 'none':
+            variable = {'source': '$remote_addr', 'sni': '$ssl_server_name', 'alpn': '$ssl_alpn_protocol', 'tls_protocol': '$ssl_protocol'}[routing]
+            if s.get('tls_mode') == 'preread' and routing != 'source':
+                variable = {'sni': '$ssl_preread_server_name', 'alpn': '$ssl_preread_alpn_protocols', 'tls_protocol': '$ssl_preread_protocol'}[routing]
+            item['routing_lines'] = ['  %s %s $route_%s {' % ('geo' if routing == 'source' else 'map', variable, sid), '    default pool_%s;' % pool]
+            if routing == 'sni':
+                item['routing_lines'].insert(1, '    hostnames;')
+            seen = set()
+            for route in routes.get(sid, []):
+                match = route.get('match', '')
+                if routing == 'source':
+                    try:
+                        match = str(ipaddress.ip_network(match, strict=False))
+                    except ValueError:
+                        raise Invalid('Source route needs an IP or CIDR')
+                elif routing == 'sni':
+                    match = nsm_ops.sni_name(types.SimpleNamespace(**globals()), match)
+                elif routing == 'alpn':
+                    if not re.fullmatch(r'[A-Za-z0-9/.-]{1,64}', match):
+                        raise Invalid('Invalid ALPN route')
+                    if s.get('tls_mode') == 'preread':
+                        # Restrict tokens above; dots are escaped with a character class.
+                        match = '~(?:^|,)' + match.replace('.', '[.]') + '(?:,|$)'
+                else:
+                    if match not in ('none', 'TLSv1', 'TLSv1.1', 'TLSv1.2', 'TLSv1.3'):
+                        raise Invalid('Invalid TLS protocol route')
+                    if match == 'none':
+                        match = '""'
+                if match in ('default', 'hostnames', 'include', 'volatile'):
+                    raise Invalid('Route match is a reserved Nginx map keyword')
+                if match in seen:
+                    raise Invalid('Duplicate route match for service ' + sid)
+                seen.add(match)
+                item['routing_lines'].append('    %s pool_%s;' % (match, route['pool']))
+            item['routing_lines'].append('  }')
+        if item.get('bind_address'):
+            local = address(item['bind_address'])
+            if any(b['ip'] is not None and b['ip'].version != local.version for b in bs):
+                raise Invalid('Source bind and upstream IP families must match')
+        if item.get('upstream_tls') == '1' and not flag(item, 'proxy_ssl_verify', '1'):
+            warnings.append('%s: upstream TLS certificate verification is disabled' % sid)
         if not networks:
             warnings.append('%s: all source IPs allowed by Nginx; firewall still controls access.' % sid)
         services.append(item)
@@ -246,36 +517,46 @@ def compile_config(sections, module=True):
     if module:
         lines.append('load_module %s;' % MODULE)
     lines += ['user nobody nogroup;', 'worker_processes %s;' % workers,
-              'worker_rlimit_nofile %d;' % nofile, 'worker_shutdown_timeout 15s;',
+              'worker_rlimit_nofile %d;' % nofile, 'worker_shutdown_timeout %ds;' % shutdown_timeout,
               'pid %s/nginx.pid;' % RUN, 'daemon off;',
               'error_log %s/manager.error.log warn;' % LOG,
-              'events { worker_connections %d; }' % connections, 'stream {',
+              'events { worker_connections %d; multi_accept %s; accept_mutex %s; }' % (connections, 'on' if flag(g, 'multi_accept') else 'off', 'on' if flag(g, 'accept_mutex') else 'off'), 'stream {',
               "  log_format nsm '$remote_addr [$time_local] $protocol $status $bytes_sent $bytes_received $session_time upstream=$upstream_addr';"]
-    used = {s['pool'] for s in services}
+    if any(s['routing_lines'] and s.get('routing') != 'source' for s in services):
+        # OpenWrt ARM may default to 32-byte buckets; even ordinary SNI names
+        # do not fit. 512 accommodates a full 253-byte DNS name plus overhead.
+        lines += ['  map_hash_bucket_size 512;', '  map_hash_max_size 4096;']
+    used = {pool for s in services for pool in s['targets']}
     for name in sorted(used):
-        lines += ['  upstream pool_%s {' % name, '    zone pool_%s 64k;' % name]
+        lines += ['  upstream pool_%s {' % name, '    zone pool_%s %dk;' % (name, pools[name]['zone_kb'])]
         method = pools[name]['method']
         if method == 'least_conn':
             lines.append('    least_conn;')
         elif method == 'hash_ip':
             lines.append('    hash $remote_addr consistent;')
+        elif method in ('hash', 'hash_consistent'):
+            lines.append('    hash %s%s;' % (pools[name]['hash_key'], ' consistent' if method == 'hash_consistent' else ''))
+        elif method in ('random', 'random_two'):
+            lines.append('    random%s;' % (' two least_conn' if method == 'random_two' else ''))
         for b in backends[name]:
             opts = 'weight=%d max_fails=%d fail_timeout=%ds max_conns=%d' % (b['weight'], b['max_fails'], b['fail_timeout'], b['max_conns'])
             opts += ' backup' if b['backup'] else ''
             opts += ' down' if b['down'] else ''
-            lines.append('    server %s %s;' % (endpoint(b['ip'], b['port']), opts))
+            lines.append('    server %s %s;' % (b['target'], opts))
         lines.append('  }')
     for s in services:
+        lines += s['extras'][0] + s['routing_lines']
         if s['traffic_history']:
-            lines.append('  log_format traffic_%s escape=json \'{"service":"%s","time":"$msec","protocol":"$protocol","upstream":"$upstream_addr","sent":"$upstream_bytes_sent","received":"$upstream_bytes_received"}\';' % (s['sid'], s['sid']))
+            lines.append('  log_format traffic_%s escape=json \'{"service":"%s","time":"$msec","protocol":"$protocol","upstream":"$upstream_addr","sent":"$upstream_bytes_sent","received":"$upstream_bytes_received","connect":"$upstream_connect_time","session":"$session_time","status":"$status"}\';' % (s['sid'], s['sid']))
         for proto in s['protos']:
             lines += ['  server {', '    listen %s%s%s;' % (endpoint(s['ip'], s['port']),
-                      (' udp' if proto == 'udp' else '') + ' reuseport' + (' bind' if not s['ip'].is_unspecified else ''), ' ipv6only=on' if s['ip'].version == 6 else ''),
-                      '    proxy_pass pool_%s;' % s['pool'],
+                      (' udp' if proto == 'udp' else '') + ' reuseport' + (' bind' if not s['ip'].is_unspecified else '') + ''.join(' ' + opt for opt in s['extras'][2]), ' ipv6only=on' if s['ip'].version == 6 else ''),
+                      '    proxy_pass %s;' % ('$route_' + s['sid'] if s['routing_lines'] else 'pool_' + s['pool']),
                       '    proxy_connect_timeout %ds;' % s['connect_timeout'], '    proxy_timeout %ds;' % s['timeout'],
-                      '    proxy_next_upstream on;', '    proxy_next_upstream_tries %d;' % s['next_upstream_tries'],
+                      '    proxy_next_upstream_tries %d;' % s['next_upstream_tries'],
                       '    proxy_upload_rate %d;' % s['upload_rate'], '    proxy_download_rate %d;' % s['download_rate'],
-                      '    error_log %s/%s.error.log warn;' % (LOG, s['sid'])]
+                      '    error_log %s/%s.error.log %s;' % (LOG, s['sid'], s['error_level'])]
+            lines += s['extras'][1]
             if s['access_log']:
                 lines.append('    access_log %s/%s.access.log nsm;' % (LOG, s['sid']))
             if s['traffic_history']:
@@ -293,6 +574,7 @@ def compile_config(sections, module=True):
                           '    proxy_half_close %s;' % ('on' if s['half_close'] else 'off')]
                 if s['proxy_protocol']:
                     lines.append('    proxy_protocol on;')
+            lines += ['    deny %s;' % n for n in s['denied']]
             lines += ['    allow %s;' % n for n in s['networks']]
             if s['networks']:
                 lines.append('    deny all;')
@@ -308,6 +590,7 @@ def compile_config(sections, module=True):
             'return_interfaces': sorted({r[0] for r in returns}),
             'families': sorted(families), 'warnings': warnings, 'log_mb': log_mb,
             'traffic_services': [s['sid'] for s in services if s['traffic_history']],
+            'observability': {k: g[k] for k in ('history_path', 'history_days') if k in g},
             'services': [{'id': s['sid'], 'listen': endpoint(s['ip'], s['port']), 'protocol': s['protocol'],
                           'pool': s['pool'], 'transparent': s['transparent']} for s in services]}
 
@@ -421,15 +704,22 @@ def preflight(compiled):
     check_listeners(compiled)
     test = RUN / 'candidate.conf'
     atomic(test, compiled['nginx'])
-    command([NGINX, '-t', '-p', str(RUN) + '/', '-c', str(test)])
+    checked = command([NGINX, '-t', '-p', str(RUN) + '/', '-c', str(test)], check=False)
+    if checked.returncode:
+        error = (checked.stderr or checked.stdout).strip()[:3000]
+        if 'set_real_ip_from' in error and ('not allowed here' in error or 'unknown directive' in error):
+            raise Invalid('Installed stream module lacks stream real-IP support. nginx -V may describe a different module build. Use a matching module with --with-stream_realip_module or remove trusted proxies. ' + error)
+        raise Invalid('Nginx validation failed: ' + error)
     command(['nft', '-c', '-f', '-'], data=nft_batch(compiled['nft']))
     check_rules = 'table inet nsm_check_%d {\n chain input {\n%s\n }\n}\n' % (os.getpid(), compiled['fw4'])
     command(['nft', '-c', '-f', '-'], data=check_rules)
     return compiled
 
 def prepare():
-    sections = read_config()
+    raw = bounded_read(APP_CONFIG, 1048576)
+    sections = read_config(raw)
     c = compile_config(sections, module=Path(MODULE).exists())
+    c['source_config'] = raw.decode()
     if not Path(MODULE).exists():
         version = command([NGINX, '-V']).stderr
         if not re.search(r'--with-stream(?:\s|$)', version):
@@ -594,6 +884,8 @@ def apply(reload=False):
             except Exception as recovery:
                 raise Invalid('%s; recovery also failed: %s. Inspect routing and logs.' % (error, recovery)) from error
             raise
+        if reload:
+            working_snapshot()
         return {'ok': True, 'message': 'Configuration applied; new Nginx workers observed.' if reload else 'Configuration prepared.',
                 'warnings': c['warnings'][:20]}
 
@@ -619,6 +911,7 @@ def lifecycle(started):
         master = pid()
         if started and master:
             confirm_reload(master, set())
+            working_snapshot()
             return {'ok': True, 'message': 'Nginx workers observed; forwarding is not probed.'}
         if not started and not master:
             return cleanup()
@@ -676,7 +969,7 @@ TRAFFIC_READ = 2 * 1024 * 1024
 TRAFFIC_RETENTION = 86400
 
 
-def traffic_record(raw, now):
+def traffic_record(raw, now, detailed=False):
     record = json.loads(raw)
     sid = ident(record['service'])
     proto = record['protocol']
@@ -691,18 +984,36 @@ def traffic_record(raw, now):
     if not len(peers) == len(sent) == len(received) or len(peers) > 100:
         raise Invalid('Unaligned upstream counters')
     rows = []
-    for peer, tx, rx in zip(peers, sent, received):
+    connects = record.get('connect', '').split(', ')
+    measured = 'connect' in record
+    if measured and len(connects) != len(peers):
+        raise Invalid('Unaligned connection timings')
+    def milliseconds(value):
+        if not re.fullmatch(r'[0-9]+(?:\.[0-9]{1,3})?', value):
+            raise Invalid('Invalid duration')
+        return integer(round(float(value) * 1000), 0, 2**53-1, 'Duration')
+    for index, (peer, tx, rx) in enumerate(zip(peers, sent, received)):
         if peer == '-' or peer.startswith('pool_'):
             continue  # No upstream was selected.
-        match = re.fullmatch(r'(?:\[([^\]]+)\]|([^:]+)):([0-9]+)', peer)
-        if not match:
-            raise Invalid('Invalid traffic endpoint')
-        target = endpoint(address(match[1] or match[2]), integer(match[3], 1, 65535, 'Port'))
+        if peer.startswith('unix:'):
+            target = 'unix:' + file_path(peer[5:])
+        else:
+            match = re.fullmatch(r'(?:\[([^\]]+)\]|([^:]+)):([0-9]+)', peer)
+            if not match:
+                raise Invalid('Invalid traffic endpoint')
+            target = endpoint(address(match[1] or match[2]), integer(match[3], 1, 65535, 'Port'))
         # Missing values represent unsuccessful/unavailable measurements, not zero bytes.
         if tx == '-' or rx == '-':
             raise Invalid('Missing upstream counter')
-        rows.append((sid + '|' + proto + '|' + target, str(minute),
-                     integer(tx, 0, 2**63 - 1, 'Sent bytes'), integer(rx, 0, 2**63 - 1, 'Received bytes')))
+        row = (sid + '|' + proto + '|' + target, str(minute),
+               integer(tx, 0, 2**63 - 1, 'Sent bytes'), integer(rx, 0, 2**63 - 1, 'Received bytes'))
+        if detailed and measured:
+            final = index == len(peers)-1
+            missing = connects[index] == '-'
+            row += (int(missing or (final and record.get('status') in ('500', '502', '503'))), int(not final),
+                    0 if missing else milliseconds(connects[index]), int(not missing),
+                    milliseconds(record['session']) if final else 0, int(final))
+        rows.append(row)
     return rows
 
 
@@ -738,6 +1049,14 @@ def collect_traffic(now=None):
             raise ValueError('Unknown traffic state version')
     except FileNotFoundError:
         data = {'version': 1, 'series': {}, 'cursors': {}, 'started': now, 'limited_at': 0}
+        try:
+            saved = nsm_ops.archive(types.SimpleNamespace(**globals()))
+            if saved and saved.get('recent'):
+                data = saved['recent']
+                if saved.get('boot') != Path('/proc/sys/kernel/random/boot_id').read_text().strip():
+                    data['cursors'] = {}
+        except Exception as error:
+            atomic(RUN / 'archive-error', str(error)[:500])
     trim_traffic(data, now)
     remaining, visible = TRAFFIC_READ, set()
     for log in (LOG / 'traffic.log.1', LOG / 'traffic.log'):
@@ -780,15 +1099,20 @@ def collect_traffic(now=None):
                     break
                 cursor['offset'] = stream.tell()
                 try:
-                    rows = traffic_record(raw, now)
+                    rows = traffic_record(raw, now, detailed=True)
                 except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
                     data['limited_at'] = now
                     continue
-                for series, minute, tx, rx in rows:
+                for row in rows:
+                    series, minute, tx, rx = row[:4]
                     cell = data['series'].setdefault(series, {}).setdefault(minute, [0, 0, 0])
                     cell[0] += tx
                     cell[1] += rx
                     cell[2] += 1  # Upstream attempts; retries may create more than one per session.
+                    if len(row) > 4:
+                        cell.extend([0] * (9-len(cell)))
+                        for i, value in enumerate(row[4:], 3):
+                            cell[i] += value
                 # Keep working memory bounded even during a large log catch-up.
                 if len(data['series']) > TRAFFIC_SERIES or sum(len(b) for b in data['series'].values()) > TRAFFIC_CELLS + 100:
                     trim_traffic(data, now)
@@ -799,6 +1123,11 @@ def collect_traffic(now=None):
             del data['cursors'][key]
     trim_traffic(data, now)
     atomic(path, json.dumps(data, separators=(',', ':')))
+    try:
+        nsm_ops.archive(types.SimpleNamespace(**globals()), data, now)
+        (RUN / 'archive-error').unlink(missing_ok=True)
+    except Exception as error:
+        atomic(RUN / 'archive-error', str(error)[:500])
     return data
 
 
@@ -807,30 +1136,33 @@ def traffic(args):
     if sid not in {s['.name'] for s in read_config() if s['.type'] == 'service'}:
         raise Invalid('Unknown service')
     hours, proto, selected = args.get('hours', 1), args.get('protocol', 'all'), args.get('upstream', '')
-    if hours not in (1, 6, 24) or proto not in ('all', 'TCP', 'UDP') or len(selected) > 80:
+    if hours not in (1, 6, 24, 168, 720) or proto not in ('all', 'TCP', 'UDP') or len(selected) > 256:
         raise Invalid('Invalid traffic selection')
     now = int(time.time())
-    step = {1: 60, 6: 300, 24: 900}[hours]
+    step = {1: 60, 6: 300, 24: 900, 168: 3600, 720: 21600}[hours]
     end = now // step * step
     start = end - hours * 3600 + step
     with locked():
         data = collect_traffic(now)
         active = sid in (state() or {}).get('traffic_services', [])
+        if hours > 24:
+            saved = nsm_ops.archive(types.SimpleNamespace(**globals()))
+            if not saved:
+                raise Invalid('Configure a mounted history drive for periods longer than 24 hours')
+            data = dict(data, series=saved['hours'])
     peers = {}
     for key, bins in data['series'].items():
         service, protocol, peer = key.split('|')
         if service != sid or (proto != 'all' and protocol != proto):
             continue
-        result = peers.setdefault(peer, {'upstream': peer, 'sent': 0, 'received': 0, 'attempts': 0, 'points': {}})
+        result = peers.setdefault(peer, dict.fromkeys(nsm_ops.METRICS, 0) | {'upstream': peer, 'points': {}})
         for stamp, values_ in bins.items():
             bucket = int(stamp) // step * step
             if start <= bucket <= end:
-                result['sent'] += values_[0]
-                result['received'] += values_[1]
-                result['attempts'] += values_[2]
-                cell = result['points'].setdefault(bucket, [0, 0])
-                cell[0] += values_[0]
-                cell[1] += values_[1]
+                cell = result['points'].setdefault(bucket, [0]*9)
+                for i, value in enumerate(values_):
+                    result[nsm_ops.METRICS[i]] += value
+                    cell[i] += value
     names = sorted(peers, key=lambda p: (-peers[p]['sent'], p))
     if selected and selected not in peers:
         names_to_show = []
@@ -839,13 +1171,19 @@ def traffic(args):
     series = []
     for peer in names_to_show:
         result = peers[peer]
-        result['points'] = [result['points'].get(t, [0, 0]) for t in range(start, end + 1, step)]
+        result['points'] = [result['points'].get(t, [0]*9) for t in range(start, end + 1, step)]
         series.append(result)
-    return {'ok': True, 'enabled': active, 'start': start, 'step': step, 'now': now,
-            'started': data['started'], 'endpoints': names, 'series': series,
+    result = {'ok': True, 'enabled': active, 'start': start, 'step': step, 'now': now,
+            'started': data['started'], 'endpoints': names[:64], 'endpoint_omitted': max(0, len(names)-64), 'series': series,
             'omitted': max(0, len(names) - len(series)),
             'limited': data['limited_at'] > 0 and data['limited_at'] >= now - TRAFFIC_RETENTION,
             'pending': any(c['offset'] < c['size'] for c in data['cursors'].values())}
+    if hours > 24:
+        result['limited'] = result['limited'] or saved.get('limited', False)
+    while len(json.dumps(result).encode()) > 54000 and result['series']:
+        result['series'].pop()
+        result['omitted'] += 1
+    return result
 
 
 def rotate():
@@ -1008,6 +1346,13 @@ def control_job(action, fd):
 def rpc(method, args):
     if not isinstance(args, dict):
         raise Invalid('RPC arguments must be a JSON object')
+    # uhttpd/rpcd inject this transport metadata for authenticated LuCI calls.
+    # Authorization remains rpcd's ACL responsibility, not a caller-supplied ID.
+    if 'ubus_rpc_session' in args:
+        args = dict(args)
+        session = args.pop('ubus_rpc_session')
+        if not isinstance(session, str) or not re.fullmatch(r'[0-9a-fA-F]{32}', session):
+            raise Invalid('Invalid RPC session metadata')
     if method not in SIGNATURES or set(args) - set(SIGNATURES[method]):
         raise Invalid('Unknown method or argument')
     for key, value in args.items():
@@ -1023,6 +1368,18 @@ def rpc(method, args):
         return logs(args)
     if method == 'traffic':
         return traffic(args)
+    if method == 'monitor':
+        return ops().monitor(args.get('page', 0))
+    if method == 'monitor_refresh':
+        return monitor_tick()
+    if method == 'diagnostics':
+        return ops().diagnostics()
+    if method == 'metrics':
+        return ops().metrics()
+    if method == 'config_tools':
+        return ops().backup(args)
+    if method == 'route_test':
+        return ops().route_test(args)
     if method in ('preview', 'validate'):
         with locked():
             c = prepare() if method == 'validate' else compile_config(read_config(), Path(MODULE).exists())
@@ -1036,6 +1393,9 @@ def rpc(method, args):
     raise Invalid('Unknown method')
 
 SIGNATURES = {'import_preview': {}, 'import_commit': {'token': ''}, 'status': {}, 'preview': {}, 'validate': {},
+              'monitor': {'page': 0}, 'monitor_refresh': {}, 'diagnostics': {}, 'metrics': {},
+              'config_tools': {'action': 'list', 'source': '', 'name': '', 'content': '', 'token': ''},
+              'route_test': {'service': '', 'name': ''},
               'traffic': {'service': '', 'hours': 1, 'protocol': 'all', 'upstream': ''},
               'logs': {'service': 'manager', 'kind': 'error', 'lines': 500},
               'control': {'action': 'status'}}
@@ -1048,9 +1408,10 @@ def main():
         elif op == 'control-job':
             result = control_job(sys.argv[2], int(sys.argv[3]))
         elif op == 'call':
-            raw = sys.stdin.read(8193)
-            if len(raw) > 8192:
-                raise Invalid('RPC input exceeds 8192 characters')
+            limit = 65536 if len(sys.argv) > 2 and sys.argv[2] == 'config_tools' else 8192
+            raw = sys.stdin.read(limit + 1)
+            if len(raw.encode()) > limit:
+                raise Invalid('RPC input exceeds %d bytes' % limit)
             args = json.loads(raw or '{}')
             result = rpc(sys.argv[2], args)
         elif op == 'prepare':
@@ -1074,6 +1435,8 @@ def main():
             result = restore_network()
         elif op == 'rotate':
             result = rotate()
+        elif op == 'monitor-tick':
+            result = monitor_tick()
         else:
             result = rpc(op, {})
         if op in ('prepare', 'reload', 'started'):

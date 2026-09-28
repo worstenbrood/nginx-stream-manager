@@ -124,6 +124,23 @@ for service in ('testservice', 'testservice6'):
         assert sum(s['attempts'] for s in measured) == 2, measured
 assert rpc('traffic', service='testservice6')['series'][0]['upstream'] == '[::1]:19061'
 assert not metrics['limited'] and not metrics['pending'], metrics
+assert all(s['connect_samples'] > 0 and s['sessions'] > 0 for s in metrics['series']), metrics
+assert 'nsm_24h_sent_bytes' in rpc('metrics')['text']
+snapshots = rpc('config_tools', action='list')
+assert snapshots['ok'] and any(s['label'] == 'working' for s in snapshots['items']), snapshots
+working_id = next(s['id'] for s in snapshots['items'] if s['label'] == 'working')
+exported = rpc('config_tools', action='export')
+assert json.loads(exported['content'])['format'] == 'nsm-config-1'
+preview = rpc('config_tools', action='duplicate', source='testservice', name='service_copy')
+assert preview['ok'] and 'service_copy' in preview['diff'], preview
+assert not rpc('config_tools', action='commit', token=preview['token'])['ok']
+run('uci', 'set', 'nginx_stream_manager.testbackend.health_check=tcp')
+run('uci', 'set', 'nginx_stream_manager.main.health_rise=1')
+run('uci', 'commit', 'nginx_stream_manager')
+assert rpc('monitor_refresh')['ok']
+health = rpc('monitor')
+assert any(b['id'] == 'testbackend' and b['status'] == 'up' for b in health['backends']), health
+assert rpc('diagnostics')['ok']
 assert control('reload')['running']
 run('/etc/init.d/firewall', 'reload')
 assert rpc('status')['running']
@@ -144,6 +161,12 @@ assert not Path('/var/run/nginx-stream-manager/state.json').exists()
 assert 'table inet nsm' not in run('nft', 'list', 'tables')
 assert 'nsm-listener-testservice' not in run('nft', 'list', 'chain', 'inet', 'fw4', 'input')
 assert not rpc('control', action='reboot')['ok']
+# Restore a validated working snapshot while stopped, through the real RPC transport.
+preview = rpc('config_tools', action='restore', source=working_id)
+assert preview['ok'], preview
+restored = rpc('config_tools', action='commit', token=preview['token'])
+assert restored['ok'] and not rpc('status')['running'], restored
+assert rpc('validate')['ok']
 for server in servers:
     server.shutdown(); server.server_close()
 print('Actual UCI/rpcd/procd, traffic history per upstream, TCP/UDP IPv4/IPv6, rejected reload/upgrade, firewall4 permits and cleanup: OK')
