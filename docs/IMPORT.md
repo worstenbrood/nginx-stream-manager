@@ -20,6 +20,8 @@ The application retains at most twenty import backups before refusing another im
 
 Save or discard changes in other open LuCI tabs before importing. The importer cannot inspect every separate LuCI session buffer. Avoid concurrent manual edits during import.
 
+Since 0.2.1, the bytes used for the preview token are also passed to UCI through a unique temporary package. This prevents CLI deltas from entering the import. Backups are byte-identical, including line endings. The final check before file replacement reduces the race window but is not an atomic compare-and-swap with external editors or rpcd. Only application operations share the application's lock. A writer acting immediately after the final check can still conflict; do not edit the configuration concurrently. Import clears the LuCI cache for the current view, not for other browser sessions.
+
 ## Supported conversions
 
 | Nginx | Application |
@@ -61,6 +63,8 @@ The application keeps its own worker settings, log files, log format and upstrea
 - Duplicate identical listeners, incorrect IP families or invalid values.
 - A source file already imported with the same contents.
 - Source or application configuration changed since the preview.
+- Duplicate single-value directives, multiple balancing methods or directives at an unsupported level.
+- Conditional access logs (`if=...`): the application cannot preserve the condition.
 
 The importer does not execute the source file or use shell evaluation. The text parser checks block structure and supported conversions; normal runtime validation with Nginx and nftables is still required before activation.
 

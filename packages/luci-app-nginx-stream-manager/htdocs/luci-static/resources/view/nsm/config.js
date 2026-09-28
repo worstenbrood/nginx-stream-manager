@@ -22,7 +22,11 @@ return view.extend({
         }
         function poolOption(section) {
             var opt = section.option(form.ListValue, 'pool', _('Backend pool'));
-            uci.sections('nginx_stream_manager', 'pool', function(p) { opt.value(p['.name'], p.name || p['.name']); });
+            opt.load = function(section_id) {
+                this.keylist = []; this.vallist = [];
+                uci.sections('nginx_stream_manager', 'pool', function(p) { opt.value(p['.name'], p.name || p['.name']); });
+                return this.super('load', [section_id]);
+            };
             opt.rmempty = false;
             opt.description = _('Save newly created pools before selecting them here.');
             return opt;

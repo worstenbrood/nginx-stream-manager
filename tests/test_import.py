@@ -98,7 +98,7 @@ class WorkflowTests(unittest.TestCase):
         self.patches=[patch.object(nsm,'SOURCE_CONFIG',self.source),patch.object(nsm,'APP_CONFIG',self.app),
             patch.object(nsm,'RUN',self.root/'run'),patch.object(nsm,'IMPORT_BACKUPS',self.root/'backups'),
             patch.object(nsm,'pid',return_value=None),patch.object(nsm,'command',return_value=SimpleNamespace(stdout='')),
-            patch.object(nsm,'read_config',side_effect=lambda:nsm.parse_uci(self.app.read_text()))]
+            patch.object(nsm,'read_config',side_effect=lambda raw=None:nsm.parse_uci(raw.decode() if raw is not None else self.app.read_text()))]
         for p in self.patches:p.start()
     def tearDown(self):
         for p in reversed(self.patches):p.stop()

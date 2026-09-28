@@ -216,7 +216,7 @@ class ApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, patch.object(nsm, 'RUN', Path(td)), \
              patch.object(nsm, 'prepare', return_value=c), patch.object(nsm, 'pid', return_value=None), \
              patch.object(nsm, 'network', side_effect=nsm.Invalid('failed')), \
-             patch.object(nsm, 'command'), patch.object(nsm, 'route_del') as delete:
+             patch.object(nsm, 'command'), patch.object(nsm, 'delete_nft_table'), patch.object(nsm, 'route_del') as delete:
             with self.assertRaises(nsm.Invalid): nsm.apply()
             self.assertEqual([c.args[0] for c in delete.call_args_list], [4, 6])
             self.assertIsNone(nsm.state())

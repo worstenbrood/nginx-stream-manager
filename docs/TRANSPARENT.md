@@ -46,7 +46,11 @@ ip -6 rule add priority 10100 fwmark 0x40000000/0x40000000 lookup 20100
 ip -6 route add local ::/0 dev lo table 20100
 ```
 
-The application applies this idempotently and removes its own rules when stopped. Interface hotplug recovery uses the last applied configuration. No continually accumulating anonymous UCI network sections are added.
+The application applies this idempotently and removes its own rules when stopped. Routes are added, not overwritten with `replace`. A modified rule or foreign route in the reserved table blocks application; cleanup removes only recognizable application-owned selectors. An identical NSM route copied externally cannot be distinguished from the application's own route: the table, priority and mark remain exclusively reserved.
+
+Interface hotplug recovery uses the last applied configuration. If the application lock is busy, a recovery request remains pending; maintenance retries within approximately 30 seconds. A normal firewall4 reload replaces only the fw4 table and rereads the INPUT include; the separate NSM table remains. `fw4 flush` or an external `nft flush ruleset` also removes NSM. Restart firewall4, then run `/usr/libexec/nginx-stream-manager restore`. The application does not independently rebuild a deliberately flushed firewall. No anonymous UCI network sections are added.
+
+The 0.2.1 Linux container test confirms socket matching and the return path for TCP/UDP and IPv4/IPv6. It uses separate client and backend network namespaces without NAT or flow offloading. Firewall4, mwan3/PBR, target kernel modules and your specific backend routes still require testing on OpenWrt.
 
 ## External requirements
 

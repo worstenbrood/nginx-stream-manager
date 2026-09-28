@@ -12,12 +12,13 @@ import re
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 RUN = Path('/var/run/nginx-stream-manager')
 LOG = Path('/var/log/nginx-stream-manager')
 CONFIG = 'nginx_stream_manager'
@@ -90,10 +91,21 @@ def parse_uci(text):
             raise Invalid('Unsupported UCI line: ' + line[:100])
     return sections
 
-def read_config():
-    # Private empty savedir: ignore uncommitted CLI changes; LuCI must commit first.
+def read_config(raw=None):
+    # -P adds a delta path; it does NOT remove /tmp/.uci. A unique package
+    # name in a private confdir prevents loading deltas for the real package.
+    raw = bounded_read(APP_CONFIG, 1048576) if raw is None else raw
     with tempfile.TemporaryDirectory(prefix='nsm-uci-') as td:
-        return parse_uci(command(['uci', '-P', td, 'export', CONFIG]).stdout)
+        name = Path(td).name.replace('-', '_')
+        (Path(td) / name).write_bytes(raw)
+        return parse_uci(command(['uci', '-c', td, '-P', td, 'export', name]).stdout)
+
+def bounded_read(path, limit):
+    with Path(path).open('rb') as f:
+        data = f.read(limit + 1)
+    if len(data) > limit:
+        raise Invalid('%s exceeds the %d byte limit' % (path, limit))
+    return data
 
 def compile_config(sections, module=True):
     names = [s['.name'] for s in sections]
@@ -286,6 +298,7 @@ def compile_config(sections, module=True):
     nft += ['  }', '}']
     return {'enabled': enabled, 'nginx': '\n'.join(lines) + '\n', 'nft': '\n'.join(nft) + '\n',
             'fw4': '\n'.join(firewall) + '\n',
+            'return_interfaces': sorted({r[0] for r in returns}),
             'families': sorted(families), 'warnings': warnings, 'log_mb': log_mb,
             'services': [{'id': s['sid'], 'listen': endpoint(s['ip'], s['port']), 'protocol': s['protocol'],
                           'pool': s['pool'], 'transparent': s['transparent']} for s in services]}
@@ -296,7 +309,7 @@ def atomic(path, text, mode=0o600):
     fd, tmp = tempfile.mkstemp(prefix='.' + path.name, dir=str(path.parent))
     try:
         os.fchmod(fd, mode)
-        with os.fdopen(fd, 'w') as f:
+        with os.fdopen(fd, 'wb' if isinstance(text, bytes) else 'w') as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -336,27 +349,73 @@ def nft_batch(config):
     exists = command(['nft', 'list', 'table', 'inet', TABLE], check=False).returncode == 0
     return ('delete table inet nsm\n' if exists else '') + config
 
+def delete_nft_table():
+    result = command(['nft', 'list', 'table', 'inet', TABLE], check=False)
+    if result.returncode == 0:
+        command(['nft', 'delete', 'table', 'inet', TABLE])
+    elif 'No such file or directory' not in result.stderr:
+        raise Invalid('Cannot inspect nftables table during cleanup: ' + result.stderr[:1000])
+
+def check_listeners(compiled):
+    """Reject external overlapping sockets even when SO_REUSEPORT permits bind.
+
+    This is a preflight snapshot, not a reservation against a later bind race.
+    """
+    master = pid()
+    owned = set()
+    for process in ({master} | workers(master)) if master else set():
+        for fd in Path('/proc/%d/fd' % process).iterdir():
+            try:
+                target = os.readlink(fd)
+                if target.startswith('socket:['):
+                    owned.add(target[8:-1])
+            except FileNotFoundError:
+                pass
+    for proto in ('tcp', 'udp'):
+        for family in (4, 6):
+            path = Path('/proc/net/' + proto + ('6' if family == 6 else ''))
+            if not path.exists():
+                continue
+            for line in path.read_text().splitlines()[1:]:
+                fields = line.split()
+                if fields[9] in owned or (proto == 'tcp' and fields[3] != '0A'):
+                    continue
+                if proto == 'udp' and int(fields[2].replace(':', ''), 16):
+                    continue  # Connected upstream socket, not a listener.
+                host, port = fields[1].split(':')
+                packed = b''.join(int(host[i:i+8], 16).to_bytes(4, sys.byteorder) for i in range(0, len(host), 8))
+                ip = ipaddress.ip_address(socket.inet_ntop(socket.AF_INET if family == 4 else socket.AF_INET6, packed))
+                for service in compiled['services']:
+                    addr, number = service['listen'].rsplit(':', 1)
+                    wanted = address(addr.strip('[]'))
+                    effective = ip
+                    if family == 6 and wanted.version == 4:
+                        effective = ip.ipv4_mapped or (address('0.0.0.0') if ip.is_unspecified else ip)
+                    if (service['protocol'] in (proto, 'both') and int(number) == int(port, 16)
+                            and wanted.version == effective.version
+                            and (wanted == effective or wanted.is_unspecified or effective.is_unspecified)):
+                        raise Invalid('Listener conflicts with an external socket: %s/%s' % (service['listen'], proto))
+
 def preflight(compiled):
     LOG.mkdir(parents=True, exist_ok=True, mode=0o750)
     old = state()
     if not old and command(['nft', 'list', 'table', 'inet', TABLE], check=False).returncode == 0:
         raise Invalid('nftables table inet nsm already exists without ownership state')
+    for iface in compiled.get('return_interfaces', []):
+        if not (Path('/sys/class/net') / iface).exists():
+            raise Invalid('Return interface does not exist: ' + iface)
     for fam in compiled['families']:
-        for service in read_config():
-            if service['.type'] == 'service' and flag(service, 'enabled', '1') and flag(service, 'transparent'):
-                for iface in values(service, 'return_interface'):
-                    if not (Path('/sys/class/net') / iface).exists():
-                        raise Invalid('Return interface does not exist: ' + iface)
         if not old or fam not in old['families']:
             rules = command(['ip', '-%d' % fam, 'rule', 'show']).stdout
             routes = command(['ip', '-%d' % fam, 'route', 'show', 'table', ROUTE_TABLE], check=False).stdout
             if re.search(r'^%s:' % PRIORITY, rules, re.M) or routes.strip():
                 raise Invalid('Routing priority %s or table %s is already in use (IPv%d)' % (PRIORITY, ROUTE_TABLE, fam))
+    check_listeners(compiled)
     test = RUN / 'candidate.conf'
     atomic(test, compiled['nginx'])
     command([NGINX, '-t', '-p', str(RUN) + '/', '-c', str(test)])
     command(['nft', '-c', '-f', '-'], data=nft_batch(compiled['nft']))
-    check_rules = 'table inet nsm_check_%d { chain input {\n%s\n} }\n' % (os.getpid(), compiled['fw4'])
+    check_rules = 'table inet nsm_check_%d {\n chain input {\n%s\n }\n}\n' % (os.getpid(), compiled['fw4'])
     command(['nft', '-c', '-f', '-'], data=check_rules)
     return compiled
 
@@ -371,38 +430,69 @@ def prepare():
 
 def route_add(fam):
     base = ['ip', '-%d' % fam]
-    command(base + ['route', 'replace', 'local', '0.0.0.0/0' if fam == 4 else '::/0', 'dev', 'lo', 'table', ROUTE_TABLE])
     rules = command(base + ['rule', 'show']).stdout
     ours = [line for line in rules.splitlines() if line.startswith(PRIORITY + ':')]
     if ours:
-        if len(ours) != 1 or ('fwmark ' + MASK) not in ours[0] or ('lookup ' + ROUTE_TABLE) not in ours[0]:
+        if len(ours) != 1 or not own_rule(ours[0]):
             raise Invalid('Routing priority collision: ' + ours[0])
-    else:
+    routes = routing_entries(fam)
+    if any(not own_route(r) for r in routes) or len(routes) > 1:
+        raise Invalid('Routing table collision (IPv%d)' % fam)
+    if not routes:
+        command(base + ['route', 'add', 'local', '0.0.0.0/0' if fam == 4 else '::/0', 'dev', 'lo', 'table', ROUTE_TABLE])
+    if not ours:
         command(base + ['rule', 'add', 'priority', PRIORITY, 'fwmark', MASK, 'lookup', ROUTE_TABLE])
+
+def own_rule(line):
+    return bool(re.fullmatch(r'%s:\s+from all fwmark %s lookup %s\s*' % (PRIORITY, MASK, ROUTE_TABLE), line))
+
+def routing_entries(fam):
+    result = command(['ip', '-%d' % fam, '-j', 'route', 'show', 'table', ROUTE_TABLE], check=False)
+    if result.returncode and 'FIB table does not exist' not in result.stderr:
+        raise Invalid('Cannot inspect routing table: ' + result.stderr[:1000])
+    return json.loads(result.stdout or '[]')
+
+def own_route(route):
+    return (route.get('type') == 'local' and route.get('dst') in ('default', '0.0.0.0/0', '::/0')
+            and route.get('dev') == 'lo' and route.get('protocol', 'boot') == 'boot'
+            and route.get('scope', 'host') == 'host' and route.get('metric', 0) in (0, 1024)
+            and route.get('pref', 'medium') == 'medium'
+            and not route.get('flags') and not (set(route) - {
+                'type', 'dst', 'dev', 'protocol', 'scope', 'metric', 'flags', 'pref', 'table'}))
 
 def route_del(fam):
     base = ['ip', '-%d' % fam]
-    command(base + ['rule', 'del', 'priority', PRIORITY, 'fwmark', MASK, 'lookup', ROUTE_TABLE], check=False)
-    command(base + ['route', 'del', 'local', '0.0.0.0/0' if fam == 4 else '::/0', 'dev', 'lo', 'table', ROUTE_TABLE], check=False)
+    for line in command(base + ['rule', 'show']).stdout.splitlines():
+        if own_rule(line):
+            command(base + ['rule', 'del', 'priority', PRIORITY, 'from', 'all', 'fwmark', MASK, 'lookup', ROUTE_TABLE])
+    for route in routing_entries(fam):
+        if own_route(route):
+            command(base + ['route', 'del', 'local', '0.0.0.0/0' if fam == 4 else '::/0', 'dev', 'lo', 'proto', 'boot', 'table', ROUTE_TABLE]
+                    + (['metric', str(route['metric'])] if 'metric' in route else []))
 
-def firewall_apply(text):
+def firewall_apply(text, force=False):
     path = RUN / 'fw4-input.nft'
     previous = path.read_text() if path.exists() else ''
-    if text.strip() == previous.strip():
+    if not force and text.strip() == previous.strip():
         return
     atomic(path, text)
     try:
         command(['fw4', 'check'])
         command(['/etc/init.d/firewall', 'reload'], timeout=10)
-    except Exception:
+    except Exception as error:
         atomic(path, previous)
+        try:
+            command(['fw4', 'check'])
+            command(['/etc/init.d/firewall', 'reload'], timeout=10)
+        except Exception as recovery:
+            raise Invalid('%s; firewall recovery failed: %s' % (error, recovery)) from error
         raise
 
-def network(c, old=None):
+def network(c, old=None, force_firewall=False):
     for fam in c['families']:
         route_add(fam)
     command(['nft', '-f', '-'], data=nft_batch(c['nft']))
-    firewall_apply(c.get('fw4', ''))
+    firewall_apply(c.get('fw4', ''), force=force_firewall)
     for fam in (old or {}).get('families', []):
         if fam not in c['families']:
             route_del(fam)
@@ -432,26 +522,36 @@ def workers(master):
 
 def confirm_reload(master, previous_workers):
     deadline = time.monotonic() + 4
+    candidate, since = set(), None
     while time.monotonic() < deadline:
         if pid() != master:
             raise Invalid('Nginx master exited during reload')
-        if workers(master) - previous_workers:
-            return
+        current = workers(master) - previous_workers
+        if current and current == candidate:
+            if time.monotonic() - since >= 0.5:
+                return
+        else:
+            candidate, since = current, time.monotonic()
         time.sleep(0.1)
     detail = tail_file(LOG / 'manager.error.log', 8)['text']
     raise Invalid('Nginx did not start a new worker generation after reload. ' + detail)
 
 def apply(reload=False):
     with locked():
+        if (RUN / 'pending.json').exists():
+            raise Invalid('An interrupted apply needs cleanup; stop the manager before retrying')
         c = prepare()
         if not c['enabled']:
             raise Invalid('Manager is disabled; enable it in configuration first')
         old = state()
         previous = (RUN / 'nginx.conf').read_text() if (RUN / 'nginx.conf').exists() else None
         oldpid = pid()
+        if oldpid and not reload:
+            raise Invalid('Manager is already running; use Reload')
         if reload and not oldpid:
             raise Invalid('Manager is not running; use Start')
         before = workers(oldpid) if reload else set()
+        atomic(RUN / 'pending.json', json.dumps({'families': sorted(set(c['families']) | set((old or {}).get('families', [])))}))
         try:
             network(c, old)
             atomic(RUN / 'nginx.conf', c['nginx'])
@@ -459,22 +559,30 @@ def apply(reload=False):
                 os.kill(oldpid, signal.SIGHUP)
                 confirm_reload(oldpid, before)
             atomic(RUN / 'state.json', json.dumps(c))
+            (RUN / 'pending.json').unlink()
         except Exception as error:
             # Restore the configuration before attempting any recovery reload.
             if previous is not None:
                 atomic(RUN / 'nginx.conf', previous)
+            else:
+                (RUN / 'nginx.conf').unlink(missing_ok=True)
             try:
                 if old:
-                    network(old, c)
+                    network(old, c, force_firewall=True)
                     atomic(RUN / 'state.json', json.dumps(old))
                 else:
-                    firewall_apply('')
-                    command(['nft', 'delete', 'table', 'inet', TABLE], check=False)
+                    firewall_apply('', force=True)
+                    delete_nft_table()
                     for fam in c['families']:
                         route_del(fam)
                     (RUN / 'state.json').unlink(missing_ok=True)
-                if reload and oldpid and previous is not None and pid() == oldpid:
+                if reload and oldpid and previous is not None:
+                    if pid() != oldpid:
+                        raise Invalid('Original Nginx master unavailable for recovery reload')
+                    recovery_workers = workers(oldpid)
                     os.kill(oldpid, signal.SIGHUP)
+                    confirm_reload(oldpid, recovery_workers)
+                (RUN / 'pending.json').unlink(missing_ok=True)
             except Exception as recovery:
                 raise Invalid('%s; recovery also failed: %s. Inspect routing and logs.' % (error, recovery)) from error
             raise
@@ -483,20 +591,40 @@ def apply(reload=False):
 
 def cleanup():
     with locked():
+        if pid():
+            raise Invalid('Nginx is still running; refusing to remove its network state')
         old = state()
-        if old:
-            firewall_apply('')
-            command(['nft', 'delete', 'table', 'inet', TABLE], check=False)
-            for fam in old['families']:
+        pending_path = RUN / 'pending.json'
+        pending = json.loads(pending_path.read_text()) if pending_path.exists() else {}
+        if old or pending:
+            firewall_apply('', force=True)
+            delete_nft_table()
+            for fam in set((old or {}).get('families', [])) | set(pending.get('families', [])):
                 route_del(fam)
             (RUN / 'state.json').unlink(missing_ok=True)
+            pending_path.unlink(missing_ok=True)
     return {'ok': True}
+
+def lifecycle(started):
+    deadline = time.monotonic() + (5 if started else 22)
+    while time.monotonic() < deadline:
+        master = pid()
+        if started and master:
+            confirm_reload(master, set())
+            return {'ok': True, 'message': 'Nginx workers observed; forwarding is not probed.'}
+        if not started and not master:
+            return cleanup()
+        time.sleep(0.1)
+    raise Invalid('Nginx did not %s in time; inspect manager logs' % ('start' if started else 'stop'))
 
 def restore_network():
     with locked():
+        if (RUN / 'pending.json').exists():
+            raise Invalid('Interrupted apply: stop the manager to clean up before restoring')
         old = state()
         if old and pid():
             network(old, old)
+        (RUN / 'restore-needed').unlink(missing_ok=True)
     return {'ok': True}
 
 def tail_file(path, lines=500, limit=8000):
@@ -556,19 +684,29 @@ def status():
         fw = command(['nft', 'list', 'chain', 'inet', 'fw4', 'input'], check=False).stdout
         if 'nsm-transparent-return' not in fw:
             warnings.append('Firewall4 return-socket rule missing; reload firewall.')
-        for s in read_config():
-            if s['.type'] == 'service' and flag(s, 'enabled', '1') and flag(s, 'transparent'):
-                for iface in values(s, 'return_interface'):
-                    for scope in ('all', iface):
-                        p = Path('/proc/sys/net/ipv4/conf') / scope / 'rp_filter'
-                        if p.exists() and p.read_text().strip() == '1':
-                            warnings.append('Strict rp_filter on %s may reject asymmetric returns.' % scope)
+        for scope in ['all'] + old.get('return_interfaces', []):
+            p = Path('/proc/sys/net/ipv4/conf') / scope / 'rp_filter'
+            if p.exists() and p.read_text().strip() == '1':
+                warnings.append('Strict rp_filter on %s may reject asymmetric returns.' % scope)
+    if (RUN / 'pending.json').exists():
+        warnings.append('Interrupted apply or incomplete recovery: stop the manager to clean up before retrying.')
+    operation = RUN / 'operation.json'
+    operation_state = json.loads(operation.read_text()) if operation.exists() else None
+    if operation_state and operation_state.get('pending'):
+        with (RUN / 'control.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                operation_state = dict(operation_state, pending=False, ok=False,
+                                       error='Service action was interrupted; inspect runtime state before retrying.')
+            except BlockingIOError:
+                pass
     return {'ok': True, 'version': VERSION, 'running': bool(pid()), 'pid': pid(),
+            'operation': operation_state,
             'boot_enabled': command([INIT, 'enabled'], check=False).returncode == 0,
-            'services': (old or {}).get('services', []), 'warnings': warnings,
+            'services': (old or {}).get('services', [])[:128], 'warnings': list(dict.fromkeys(warnings))[:20],
             'binaries': {x: bool(shutil.which(x)) for x in ('nginx', 'nft', 'ip', 'uci')},
             'stream_module': Path(MODULE).exists(),
-            'last_error': (RUN / 'last-error').read_text() if (RUN / 'last-error').exists() else ''}
+            'last_error': tail_file(RUN / 'last-error', 30, 3000)['text']}
 
 SOURCE_CONFIG = Path('/etc/nginx/nginx.conf')
 APP_CONFIG = Path('/etc/config/nginx_stream_manager')
@@ -580,8 +718,8 @@ def import_plan():
         raw = f.read(262145)
     if len(raw) > 262144:
         raise Invalid('nginx.conf exceeds the 256 KiB import limit')
-    current_bytes = APP_CONFIG.read_bytes()
-    current = read_config()
+    current_bytes = bounded_read(APP_CONFIG, 1048576)
+    current = read_config(current_bytes)
     result = plan(raw.decode('utf-8'), current)
     if pid() or any(s['.type'] == 'global' and flag(s, 'enabled') for s in current):
         result['blockers'].append('Stop and disable the manager before importing. Existing Nginx may keep running.')
@@ -629,7 +767,7 @@ def import_commit(token):
         if len(list(IMPORT_BACKUPS.glob('*.uci'))) >= 20:
             raise Invalid('20 import backups retained; archive old backups before importing again')
         backup = IMPORT_BACKUPS / ('before-' + time.strftime('%Y%m%d-%H%M%S') + '-' + token[:8] + '.uci')
-        atomic(backup, previous.decode('utf-8'))
+        atomic(backup, previous)
         # Check once more just before replacement; do not overwrite intervening edits.
         fresh, _, _ = import_plan()
         if fresh['token'] != token or fresh['blockers']:
@@ -638,7 +776,55 @@ def import_commit(token):
         return {'ok': True, 'message': 'Imported %d disabled services. Existing Nginx was not modified or reloaded.' % len(result['services']),
                 'backup': str(backup), 'services_imported': len(result['services'])}
 
+CONTROL_ACTIONS = ('start', 'stop', 'reload', 'enable', 'disable')
+
+def queue_control(action):
+    if action not in CONTROL_ACTIONS:
+        raise Invalid('Unsupported control action')
+    RUN.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (RUN / 'control.lock').open('w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Invalid('Another service action is running')
+        atomic(RUN / 'operation.json', json.dumps({'action': action, 'pending': True}))
+        try:
+            subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'control-job', action, str(lock.fileno())],
+                             pass_fds=(lock.fileno(),), start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            (RUN / 'operation.json').unlink(missing_ok=True)
+            raise
+    return {'ok': True, 'message': 'Action accepted: %s. Overview shows completion or failure.' % action}
+
+def control_job(action, fd):
+    # The inherited descriptor keeps control.lock locked after the RPC exits.
+    with os.fdopen(fd, 'w'):
+        result = {'action': action, 'pending': False}
+        try:
+            if action not in CONTROL_ACTIONS:
+                raise Invalid('Unsupported control action')
+            if action == 'start' and not flag(next(s for s in read_config() if s['.type'] == 'global'), 'enabled'):
+                raise Invalid('Manager is disabled; enable it in Configuration first')
+            if action in ('start', 'reload'):
+                (RUN / 'last-error').unlink(missing_ok=True)
+            command([INIT, action], timeout=90)
+            if action in ('start', 'reload') and (RUN / 'last-error').exists():
+                raise Invalid(tail_file(RUN / 'last-error', 30, 3000)['text'])
+            result.update(ok=True, message='Command completed: ' + action)
+        except Exception as error:
+            result.update(ok=False, error=str(error)[:3000])
+        atomic(RUN / 'operation.json', json.dumps(result))
+    return result
+
 def rpc(method, args):
+    if not isinstance(args, dict):
+        raise Invalid('RPC arguments must be a JSON object')
+    if method not in SIGNATURES or set(args) - set(SIGNATURES[method]):
+        raise Invalid('Unknown method or argument')
+    for key, value in args.items():
+        if type(value) is not type(SIGNATURES[method][key]):
+            raise Invalid('Invalid argument type: ' + key)
     if method == 'import_preview':
         return import_preview()
     if method == 'import_commit':
@@ -656,14 +842,7 @@ def rpc(method, args):
             return {'ok': True, 'nginx': c['nginx'][:18000], 'nft': c['nft'][:8000], 'fw4': c['fw4'][:8000],
                     'truncated': len(c['nginx']) > 18000 or len(c['nft']) > 8000 or len(c['fw4']) > 8000}
     if method == 'control':
-        action = args.get('action')
-        if action not in ('start', 'stop', 'reload', 'enable', 'disable'):
-            raise Invalid('Unsupported control action')
-        if action in ('start', 'reload'):
-            with locked():
-                prepare()
-        result = command([INIT, action], timeout=12)
-        return {'ok': True, 'message': result.stdout.strip() or 'Command completed: ' + action}
+        return queue_control(args.get('action'))
     raise Invalid('Unknown method')
 
 SIGNATURES = {'import_preview': {}, 'import_commit': {'token': ''}, 'status': {}, 'preview': {}, 'validate': {},
@@ -675,8 +854,13 @@ def main():
         op = sys.argv[1] if len(sys.argv) > 1 else 'status'
         if op == 'list':
             result = SIGNATURES
+        elif op == 'control-job':
+            result = control_job(sys.argv[2], int(sys.argv[3]))
         elif op == 'call':
-            args = json.loads(sys.stdin.read(8192) or '{}')
+            raw = sys.stdin.read(8193)
+            if len(raw) > 8192:
+                raise Invalid('RPC input exceeds 8192 characters')
+            args = json.loads(raw or '{}')
             result = rpc(sys.argv[2], args)
         elif op == 'prepare':
             result = apply()
@@ -684,20 +868,34 @@ def main():
             result = apply(reload=True)
         elif op == 'cleanup':
             result = cleanup()
+        elif op in ('started', 'stopped'):
+            result = lifecycle(op == 'started')
+        elif op == 'running':
+            return 0 if pid() else 1
+        elif op == 'configured':
+            globals_ = [s for s in read_config() if s['.type'] == 'global' and s['.name'] == 'main']
+            if len(globals_) != 1:
+                raise Invalid('Exactly one global main section is required')
+            print('1' if flag(globals_[0], 'enabled') else '0')
+            return 0
         elif op == 'restore':
+            atomic(RUN / 'restore-needed', '1')
             result = restore_network()
         elif op == 'rotate':
             result = rotate()
         else:
             result = rpc(op, {})
-        if op in ('prepare', 'reload'):
+        if op in ('prepare', 'reload', 'started'):
             (RUN / 'last-error').unlink(missing_ok=True)
-        print(json.dumps(result))
+        output = json.dumps(result)
+        if len(output.encode()) > 60000:
+            raise Invalid('Response exceeds 60000 bytes; reduce configuration or requested output')
+        print(output)
         return 0
     except Exception as e:
-        if len(sys.argv) > 1 and sys.argv[1] in ('prepare', 'reload'):
-            atomic(RUN / 'last-error', str(e))
-        print(json.dumps({'ok': False, 'error': str(e)}))
+        if len(sys.argv) > 1 and sys.argv[1] in ('prepare', 'reload', 'started', 'stopped', 'restore', 'configured'):
+            atomic(RUN / 'last-error', str(e)[:3000])
+        print(json.dumps({'ok': False, 'error': str(e)[:3000]}))
         # rpcd must receive the JSON even when the operation failed.
         return 0 if len(sys.argv) > 1 and sys.argv[1] == 'call' else 1
 

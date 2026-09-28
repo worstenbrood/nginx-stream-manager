@@ -1,8 +1,14 @@
 #!/bin/sh
 set -eu
 [ "$(id -u)" -eq 0 ] && [ -f /etc/openwrt_release ] || exit 1
+if { command -v apk >/dev/null 2>&1 && apk info -e nginx-stream-manager >/dev/null 2>&1; } ||
+   { command -v opkg >/dev/null 2>&1 && opkg status nginx-stream-manager 2>/dev/null | grep -q '^Status: .* installed'; }; then
+    echo 'Remove package-managed installations with the package manager.' >&2
+    exit 1
+fi
 if [ -x /etc/init.d/nginx-stream-manager ]; then
     /etc/init.d/nginx-stream-manager stop
+    /usr/libexec/nginx-stream-manager cleanup
     /etc/init.d/nginx-stream-manager disable
 fi
 rm -f /usr/libexec/nginx-stream-manager /usr/libexec/nginx-stream-manager-maintenance /usr/libexec/nsm_importer.py

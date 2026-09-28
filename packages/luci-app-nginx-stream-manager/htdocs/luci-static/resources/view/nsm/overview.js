@@ -22,6 +22,8 @@ return view.extend({
             ]));
             if (!s.ok) stateBox.appendChild(E('p', { 'class': 'alert-message warning' }, s.error || _('Status unavailable')));
             if (s.last_error) stateBox.appendChild(E('p', { 'class': 'alert-message warning' }, _('Last apply error: ') + s.last_error));
+            if (s.operation) stateBox.appendChild(E('p', { 'class': s.operation.ok === false ? 'alert-message warning' : '' },
+                s.operation.pending ? _('Service action in progress: ') + s.operation.action : (s.operation.error || s.operation.message)));
             (s.warnings || []).forEach(function(w) { stateBox.appendChild(E('p', { 'class': 'alert-message warning' }, w)); });
             var rows = [E('tr', { 'class': 'tr table-titles' }, [
                 E('th', { 'class': 'th' }, _('Service')), E('th', { 'class': 'th' }, _('Listener')),

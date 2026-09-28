@@ -1,8 +1,8 @@
-# Nginx Stream Manager 0.2.0
+# Nginx Stream Manager 0.2.1
 
 Generic LuCI application for TCP/UDP load balancing on OpenWrt, with optional client-IP preservation through `proxy_bind $remote_addr transparent`.
 
-**This is an initial implementation with source code and an installer, not a release tested on your router.** The included unit tests check the generator, input validation, log bounds and recovery paths. A real OpenWrt router, Nginx, nftables kernel and SDK were unavailable during development. Package builds and end-to-end network operation still need confirmation on your OpenWrt version.
+**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. This validates the Linux networking setup; package builds, procd, firewall4 and LuCI on your OpenWrt version remain separate acceptance tests. See [test results](docs/TESTING.md) and the [technical review](docs/REVIEW-0.2.1.md).
 
 ## Features
 
@@ -30,7 +30,7 @@ cd /tmp/nginx-stream-manager
 sh install.sh
 ```
 
-The installer detects `apk` or `opkg`, installs dependencies and adds the application. It does not modify your existing `/etc/nginx/nginx.conf` or `/etc/config/network`. It reloads firewall4 and restarts rpcd to activate the new integration. Then log out of LuCI and back in.
+The installer detects `apk` or `opkg`, installs dependencies and adds the application. The application and script do not write to your existing `/etc/nginx/nginx.conf` or `/etc/config/network`. Dependency installation may run the package manager's own package scripts, including Nginx service management; check which Nginx variant is installed beforehand. The installer preserves an existing Nginx provider. It reloads firewall4 and restarts rpcd to activate the new integration. Then log out of LuCI and back in.
 
 Menu: **Services → Stream Manager**.
 
@@ -39,13 +39,15 @@ The manager is **disabled** on a fresh installation. Installation does not start
 Dependencies:
 
 ```text
-luci-base nginx-full nginx-mod-stream python3 ip-full
-nftables-json firewall4 kmod-nft-socket kmod-nf-socket
+luci-base nginx-mod-stream python3 ip-full
+nftables-json firewall4 kmod-nft-socket
 ```
 
 This version uses Python 3 for the backend. This simplifies validation and testing but needs more storage than a ucode backend. Check free space on small routers. Kernel modules must come from feeds matching your running kernel exactly. Never force a different kernel version to bypass an installation error.
 
-## Upgrading from 0.1.0
+An Nginx provider and rpcd are also required. The manual installer adds `nginx-full` if no Nginx binary is present; the package declares the virtual dependency `nginx`. `kmod-nft-socket` pulls in `kmod-nf-socket` automatically. No TPROXY modules are added.
+
+## Upgrading from 0.1.0 or 0.2.0
 
 Stop Stream Manager before running the new installer:
 
@@ -55,6 +57,8 @@ sh install.sh
 ```
 
 Existing application configuration is preserved. Sign in to LuCI again to load the new RPC permissions and import view. To import, also disable **Enable manager** and apply that change. Your existing manually managed Nginx instance does not need to stop for this.
+
+Do not mix the manual installer and package management: the scripts now refuse to overwrite or remove a package installation. OpenWrt package hooks may restart an enabled configuration after a package upgrade; disable the manager beforehand if that is unwanted. The 0.2.1 removal hook preserves the boot preference during upgrades. The **old 0.2.0 hook** did disable boot start: check that preference after upgrading from that version. OpenWrt may create a boot symlink for a new package installation, but the default UCI configuration remains disabled.
 
 ## Importing an existing Nginx configuration
 
@@ -124,7 +128,7 @@ state:   /var/run/nginx-stream-manager/state.json
 logs:    /var/log/nginx-stream-manager/
 ```
 
-LuCI/uhttpd and existing Nginx websites remain separate. Identical IP:port/protocol listeners must not be managed by the old and new instances simultaneously. With `reuseport`, Linux can distribute the same listener across both processes; this is not a safe migration. Stop the old listener first. Duplicate identical listeners within this application are detected before apply. Specific addresses, such as loopback, may coexist with a wildcard on the same port; the generator uses explicit socket binding and reuseport for this. Nginx reports conflicts with external processes when it actually binds; `nginx -t` does not prove that a port is free.
+LuCI/uhttpd and existing Nginx websites remain separate. Identical IP:port/protocol listeners must not be managed by the old and new instances simultaneously. With `reuseport`, Linux can distribute the same listener across both processes; this is not a safe migration. Stop the old listener first. Duplicate identical listeners within this application are detected before apply. Specific addresses, such as loopback, may coexist with a wildcard on the same port; the generator uses explicit socket binding and reuseport for this. Preflight now also checks external TCP/UDP sockets through `/proc/net`, excluding the application's own Nginx sockets. External IPv6 wildcards are conservatively treated as potentially dual-stack for IPv4. This snapshot does not reserve ports: a process can still bind afterwards. `nginx -t` alone does not prove that a port is free.
 
 A reload gives old workers at most 15 seconds to finish. Long-running connections and UDP sessions may therefore be interrupted. Changes to return rules may affect old transparent sessions sooner. This is not a hitless configuration change or a highly available cluster.
 
@@ -155,7 +159,17 @@ The installer does not perform this migration automatically. A script cannot rel
 ubus call luci.nginx-stream-manager logs '{"service":"manager","kind":"error","lines":100}'
 ```
 
-`preview` through RPC bounds output for ubus. The complete active Nginx configuration is at the runtime path above.
+`preview` through RPC bounds output for ubus. All RPC responses remain below 60,000 serialized bytes; an oversized response produces an error. The complete active Nginx configuration is at the runtime path above.
+
+LuCI service buttons start a separate, serialized background action. “Action accepted” confirms only the request; **Overview** subsequently shows completion or failure through `status.operation`. This prevents rpcd from terminating a long service action because of its request timeout. SSH init commands remain synchronous.
+
+### What start, reload and rollback confirm
+
+Start waits for observed Nginx workers. Reload waits for new worker PIDs that remain present for at least half a second. This is a process check, not proof that every listener works or a backend is reachable; a concurrent worker respawn can produce the same observation.
+
+On failure, the application attempts to restore the previous configuration file, network and firewall rules. The recovery reload is also checked for workers. Firewall recovery reloads the previous snippet even if the previous firewall reload had already partially run. The UCI configuration itself is **not** rolled back on runtime errors. Nginx, policy routing and firewall4 do not form an atomic transaction: existing sessions may be lost and external changes may prevent recovery.
+
+An interrupted apply or failed recovery leaves `pending.json` containing the involved IP families. Subsequent applies and hotplug recovery are then refused. Stop the manager, inspect the error in Overview and check routes and firewall. Stop cleans up only after Nginx has exited; if cleanup also fails, ownership files are retained for another attempt. Do not delete those files blindly.
 
 ## Building packages
 
@@ -185,7 +199,7 @@ sh uninstall.sh
 
 This stops the application, cleans up its active routing and firewall permits, removes application files and preserves UCI configuration, logs and shared dependencies. If you installed real packages, remove them through the package manager instead of this script.
 
-## Limitations of version 0.2.0
+## Limitations of version 0.2.1
 
 - No interception of arbitrary transit traffic through TPROXY.
 - No HTTP URL routing, TLS termination, certificate management or SNI routing; TLS passthrough works as ordinary TCP traffic.

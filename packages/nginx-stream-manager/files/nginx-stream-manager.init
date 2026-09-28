@@ -6,10 +6,15 @@ PROG=/usr/libexec/nginx-stream-manager
 
 start_service() {
 	local enabled
-	config_load nginx_stream_manager
-	config_get_bool enabled main enabled 0
-	[ "$enabled" -eq 1 ] || return 0
-	"$PROG" prepare || return 1
+	NSM_PREPARED=0
+	enabled=$("$PROG" configured) || return 1
+	[ "$enabled" -eq 1 ] || { NSM_PREPARED=disabled; return 0; }
+	if "$PROG" running >/dev/null; then
+		: # Repeated start is idempotent; configuration changes use reload.
+	else
+		"$PROG" prepare || return 1
+	fi
+	NSM_PREPARED=1
 	procd_open_instance nginx
 	procd_set_param command /usr/sbin/nginx -p /var/run/nginx-stream-manager/ -c /var/run/nginx-stream-manager/nginx.conf
 	procd_set_param respawn 3600 5 5
@@ -26,19 +31,28 @@ start_service() {
 
 reload_service() {
 	local enabled
-	config_load nginx_stream_manager
-	config_get_bool enabled main enabled 0
+	enabled=$("$PROG" configured) || return 1
 	if [ "$enabled" -ne 1 ]; then
 		stop
-	elif [ -s /var/run/nginx-stream-manager/nginx.pid ] && kill -0 "$(cat /var/run/nginx-stream-manager/nginx.pid)" 2>/dev/null; then
+	elif "$PROG" running >/dev/null; then
 		"$PROG" reload
 	else
 		start
 	fi
 }
 
-stop_service() {
-	"$PROG" cleanup
+service_started() {
+	[ "$NSM_PREPARED" = disabled ] && { "$PROG" stopped; return $?; }
+	[ "$NSM_PREPARED" = 1 ] || { "$PROG" stopped; return 1; }
+	"$PROG" started && return 0
+	procd_kill nginx-stream-manager
+	"$PROG" stopped
+	return 1
+}
+
+service_stopped() {
+	# rc.common calls this after asking procd to terminate the instances.
+	"$PROG" stopped
 }
 
 service_triggers() {

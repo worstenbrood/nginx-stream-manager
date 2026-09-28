@@ -5,13 +5,21 @@ set -eu
 [ -f /etc/openwrt_release ] || { echo 'This installer is for OpenWrt only.' >&2; exit 1; }
 base=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 [ -f "$base/packages/nginx-stream-manager/files/nsm.py" ] || exit 1
+if { command -v apk >/dev/null 2>&1 && apk info -e nginx-stream-manager >/dev/null 2>&1; } ||
+   { command -v opkg >/dev/null 2>&1 && opkg status nginx-stream-manager 2>/dev/null | grep -q '^Status: .* installed'; }; then
+    echo 'Package-managed installation found; upgrade through the package manager.' >&2
+    exit 1
+fi
 if [ -x /etc/init.d/nginx-stream-manager ]; then
     echo 'Existing installation found. Stop the manager before upgrading.' >&2
     if [ -f /var/run/nginx-stream-manager/nginx.pid ] && kill -0 "$(cat /var/run/nginx-stream-manager/nginx.pid)" 2>/dev/null; then
         exit 1
     fi
+    /usr/libexec/nginx-stream-manager cleanup
 fi
-packages='luci-base nginx-full nginx-mod-stream python3 ip-full nftables-json firewall4 kmod-nft-socket kmod-nf-socket'
+packages='luci-base nginx-mod-stream python3 ip-full nftables-json firewall4 kmod-nft-socket'
+# Keep an existing nginx provider instead of forcing a conflicting variant.
+command -v nginx >/dev/null 2>&1 || packages="$packages nginx-full"
 if command -v apk >/dev/null 2>&1; then
     apk add $packages
 elif command -v opkg >/dev/null 2>&1; then

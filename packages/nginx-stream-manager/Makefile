@@ -1,10 +1,9 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=nginx-stream-manager
-PKG_VERSION:=0.2.0
+PKG_VERSION:=0.2.1
 PKG_RELEASE:=1
 PKG_LICENSE:=MIT
-PKGARCH:=all
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -12,7 +11,8 @@ define Package/nginx-stream-manager
   SECTION:=net
   CATEGORY:=Network
   TITLE:=Generic Nginx TCP/UDP stream manager
-  DEPENDS:=+nginx-full +nginx-mod-stream +python3 +ip-full +nftables-json +firewall4 +kmod-nft-socket +kmod-nf-socket
+  PKGARCH:=all
+  DEPENDS:=+nginx +nginx-mod-stream +python3 +ip-full +nftables-json +firewall4 +kmod-nft-socket +rpcd
 endef
 
 define Package/nginx-stream-manager/description
@@ -22,6 +22,10 @@ endef
 
 define Package/nginx-stream-manager/conffiles
 /etc/config/nginx_stream_manager
+endef
+
+define Build/Prepare
+	mkdir -p $(PKG_BUILD_DIR)
 endef
 
 define Build/Compile
@@ -43,17 +47,25 @@ endef
 define Package/nginx-stream-manager/postinst
 #!/bin/sh
 [ -n "$$IPKG_INSTROOT" ] && exit 0
-/etc/init.d/rpcd restart
-/etc/init.d/firewall reload
-exit 0
+/etc/init.d/rpcd restart || exit 1
+fw4 check && /etc/init.d/firewall reload
 endef
 
 define Package/nginx-stream-manager/prerm
 #!/bin/sh
 [ -n "$$IPKG_INSTROOT" ] && exit 0
-/etc/init.d/nginx-stream-manager stop
-/etc/init.d/nginx-stream-manager disable
+/etc/init.d/nginx-stream-manager stop || exit 1
+/usr/libexec/nginx-stream-manager cleanup || exit 1
+[ "$$PKG_UPGRADE" = 1 ] || /etc/init.d/nginx-stream-manager disable
 exit 0
+endef
+
+define Package/nginx-stream-manager/postrm
+#!/bin/sh
+[ -n "$$IPKG_INSTROOT" ] && exit 0
+[ "$$PKG_UPGRADE" = 1 ] && exit 0
+/etc/init.d/rpcd restart || exit 1
+fw4 check && /etc/init.d/firewall reload
 endef
 
 $(eval $(call BuildPackage,nginx-stream-manager))
