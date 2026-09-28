@@ -70,15 +70,38 @@ The fixture `tests/fixtures/existing-nginx.conf` contains the stream configurati
 
 Also tested: quotes/comments in the parser, inherited timeouts, preservation of Nginx's default connection timeout, CIDR access rules, blocking includes/SSL/hostnames/unknown directives, UCI quoting, duplicate imports, backup contents, preservation of the source file and rejection of stale preview tokens. The fixture test is a conversion test, not a live network test.
 
-## Still to validate on OpenWrt
+## Real OpenWrt userspace in 0.2.1
 
-No real OpenWrt router, browser LuCI session or SDK was used. The following checks have therefore explicitly not yet been performed:
+The official ARM64 rootfs of OpenWrt 24.10.5 was tested locally with real UCI, ubusd, rpcd, procd and firewall4. Nginx 1.26.1-r2, Python 3.11.14-r1 and nftables 1.1.1-r1 come from the OpenWrt feeds. Installation, RPC signatures, start/reload/stop, TCP/UDP request/reply over IPv4 and IPv6, permit recovery after firewall reload, rejection of an invalid reload and a manual upgrade while active, and uninstall with configuration preservation all pass. After the rejected reload, both protocols and families still respond.
+
+The container uses WSL2 host kernel 6.18.33.2; procd runs as a separate process, not PID 1. This does not prove OpenWrt boot or kernel-module behavior. See [BUILDING.md](BUILDING.md) for reproducible commands and separate SDK package inspection.
+
+The same runtime test also passes on the extracted official ASUS TUF-AX6000 filesystem from OpenWrt 25.12.5 (`mediatek/filogic`), with Nginx 1.26.3-r4 and Python 3.13.9-r3 from the feeds. This also uses the host kernel; procd cgroup isolation does not work in this container. See the [target device details](ROUTER-ASUS-TUF-AX6000.md) for differences from installed router packages.
+
+## SDK packages and package installation
+
+On 28 September 2026, both packages (`0.2.1-r1`) were successfully built with the official SDKs:
+
+| SDK | Artifacts | Package installation and runtime |
+| --- | --- | --- |
+| 24.10.5 x86/64 | Two IPKs, `Architecture: all` | Passed using real `opkg` in ARM64 24.10.5 userspace |
+| 25.12.5 mediatek/filogic | Two APKs, `arch: noarch` | Passed using real `apk` in ASUS TUF-AX6000 25.12.5 userspace |
+
+Inspection checks metadata, dependencies, root ownership, file permissions, LF line endings, a disabled default configuration, conffiles, hooks and all six LuCI files. This test found and fixed the missing buildroot signature in the LuCI Makefile.
+
+For both formats, the actual built packages were installed, the RPC/TCP/UDP/firewall tests above were run and the packages were removed while the manager was active again. Runtime status and listener permits disappear; the modified UCI configuration is preserved byte for byte. The manual installer refuses to overwrite a package installation.
+
+The SDK builds only the two script packages, with LuCI minification disabled. Runtime dependencies in installation testing come from the official feeds. This is not a complete rebuild of Nginx/Python/kernel modules. Logs, feed revisions, package manifests, configuration and checksums are stored locally under `artifacts/`; this directory is not tracked in Git.
+
+## Still to validate on the target router
+
+No real OpenWrt router or browser LuCI session was used. These checks remain outstanding:
 
 - installation through target-device feeds;
-- actual `.apk`/`.ipk` package builds;
+- installation of the built packages on the target router;
 - Nginx and nftables syntax checks on the **target OpenWrt version**;
 - LuCI form behavior in the real browser;
-- procd start/reload/reboot;
+- procd start/reload and a complete target-router reboot;
 - TCP/UDP forwarding, IPv6 and transparent return routing on the **real router/topology**;
 - interaction with mwan3/PBR, NAT, offloading and existing firewall rules.
 
@@ -113,4 +136,4 @@ uname -r
 nginx -V 2>&1
 ```
 
-This allows selection of the correct SDK, package feeds and installed Nginx variant. Then build 0.2.1 for that release. The first runtime test uses an available high port and one controlled TCP/UDP backend with source-IP preservation disabled. Only after installation, `ubus -v list luci.nginx-stream-manager`, LuCI Save & Apply and start/stop pass should the transparent test follow with a verified return route. Ports 53 and 51900 remain with the existing setup during that first test.
+The ASUS TUF-AX6000 inventory has been received: OpenWrt 25.12.5, `mediatek/filogic`, kernel 6.12.94 and Nginx 1.26.3. Matching SDK and container commands are in [BUILDING.md](BUILDING.md). The first on-device runtime test uses an available high port and one controlled TCP/UDP backend with source-IP preservation disabled. Only after installation, `ubus -v list luci.nginx-stream-manager`, LuCI Save & Apply and start/stop pass should the transparent test follow with a verified return route. Ports 53 and 51900 remain with the existing setup during that first test.

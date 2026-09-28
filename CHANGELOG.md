@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Fixed the missing OpenWrt buildroot signature in the LuCI Makefile; without that line the SDK could not find the frontend package.
+- Added a repeatable SDK build, IPK/APK content inspection and read-only router inventory targeting the ASUS TUF-AX6000 with OpenWrt 25.12.5.
+- Tested real OpenWrt 24.10.5 and 25.12.5 userspace with rpcd/procd, TCP/UDP over IPv4/IPv6, rejected reload, firewall4 and installation/removal; hardware and boot tests remain separately required.
+
 ## 0.2.1 — 2026-09-28
 
 - Real Linux integration tests with Nginx, nftables, UCI and separate client/backend network namespaces: TCP/UDP, IPv4/IPv6 and client-IP preservation.

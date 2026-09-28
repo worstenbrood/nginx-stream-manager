@@ -2,7 +2,7 @@
 
 Generic LuCI application for TCP/UDP load balancing on OpenWrt, with optional client-IP preservation through `proxy_bind $remote_addr transparent`.
 
-**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. This validates the Linux networking setup; package builds, procd, firewall4 and LuCI on your OpenWrt version remain separate acceptance tests. See [test results](docs/TESTING.md) and the [technical review](docs/REVIEW-0.2.1.md).
+**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. Both packages were built with the 24.10.5 and 25.12.5 SDKs, installed as IPK/APK and tested with real OpenWrt rpcd/procd, firewall4 and TCP/UDP over IPv4/IPv6 on the host kernel. The target router, reboot and LuCI browser operation remain separate acceptance tests. See [test results](docs/TESTING.md), [build instructions](docs/BUILDING.md) and the [technical review](docs/REVIEW-0.2.1.md).
 
 ## Features
 
@@ -172,6 +172,8 @@ On failure, the application attempts to restore the previous configuration file,
 An interrupted apply or failed recovery leaves `pending.json` containing the involved IP families. Subsequent applies and hotplug recovery are then refused. Stop the manager, inspect the error in Overview and check routes and firewall. Stop cleans up only after Nginx has exited; if cleanup also fails, ownership files are retained for another attempt. Do not delete those files blindly.
 
 ## Building packages
+
+For a reproducible local SDK build, package-content inspection and testing with real OpenWrt service processes, see [docs/BUILDING.md](docs/BUILDING.md). Obtain the router inventory with `sh tests/router-info.sh`; that script only reads version and architecture information.
 
 No prebuilt or signed `.apk`/`.ipk` is included. The manual installer works without an SDK. For normal package distribution:
 

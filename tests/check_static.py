@@ -7,6 +7,7 @@ import subprocess
 root = Path(__file__).resolve().parents[1]
 backend = root / 'packages/nginx-stream-manager/files'
 shells = [root / 'install.sh', root / 'uninstall.sh'] + [backend / p for p in ('nginx-stream-manager.init', 'rpc', 'hotplug', 'maintenance')]
+shells += list((root / 'tests').glob('*.sh'))
 for path in shells:
     if b'\r' in path.read_bytes():
         raise RuntimeError('Shell scripts require LF line endings: ' + str(path))

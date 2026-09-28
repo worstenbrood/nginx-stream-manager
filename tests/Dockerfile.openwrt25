@@ -1,0 +1,13 @@
+# ASUS TUF-AX6000 firmware userland only; never boot or flash this image.
+FROM alpine:3.23 AS fetch
+RUN apk add --no-cache squashfs-tools
+RUN wget -O /firmware.bin https://downloads.openwrt.org/releases/25.12.5/targets/mediatek/filogic/openwrt-25.12.5-mediatek-filogic-asus_tuf-ax6000-squashfs-sysupgrade.bin \
+    && echo '57b9a85c9059f2c35dc23a45324e14d724068f92f929853a82b13b91747b691f  /firmware.bin' | sha256sum -c - \
+    && tar xf /firmware.bin sysupgrade-asus_tuf-ax6000/root \
+    && unsquashfs -d /rootfs sysupgrade-asus_tuf-ax6000/root
+FROM scratch
+COPY --from=fetch /rootfs/ /
+RUN mkdir -p /var/lock && apk update \
+    && apk add python3 nginx-full nginx-mod-stream ip-full rpcd luci-base nftables-json firewall4 kmod-nft-socket
+WORKDIR /src
+CMD ["/bin/sh", "/src/tests/openwrt-userland.sh"]

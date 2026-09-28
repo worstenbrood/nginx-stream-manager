@@ -40,3 +40,7 @@ Source review on 28 September 2026. No AGENTS.md files were found in the project
 - [firewall4 reload versus flush](https://github.com/openwrt/firewall4/blob/master/root/sbin/fw4)
 
 Sources support the review but do not establish compatibility with an unspecified OpenWrt release.
+
+## Follow-up to the original review
+
+The next development step adds real SDK package builds and OpenWrt userspace tests. This found and fixed a missing buildroot signature in the LuCI Makefile: without that line, the SDK did not find the frontend package. The original notes above about missing SDK/procd/rpcd/firewall4 tests describe the earlier review status. Current results and remaining router/browser/boot tests are in [TESTING.md](TESTING.md), with the [ASUS target inventory](ROUTER-ASUS-TUF-AX6000.md) and [build procedure](BUILDING.md).

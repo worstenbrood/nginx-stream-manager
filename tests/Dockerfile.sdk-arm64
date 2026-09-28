@@ -1,0 +1,9 @@
+# Optional user-space emulation on ARM64 hosts without host binfmt registration.
+ARG SDK_IMAGE=ghcr.io/openwrt/sdk:x86-64-24.10.5
+FROM --platform=linux/amd64 ${SDK_IMAGE} AS sdk
+FROM alpine:latest
+RUN apk add --no-cache proot qemu-x86_64
+COPY --from=sdk / /sdk/
+ENV HOME=/builder
+ENTRYPOINT ["proot", "-i", "1000:1000", "-q", "/usr/bin/qemu-x86_64", "-r", "/sdk", "-b", "/proc", "-b", "/dev", "-b", "/src", "-b", "/out", "-b", "/etc/resolv.conf", "-b", "/.dockerenv", "-w", "/builder"]
+CMD ["/bin/sh", "/src/tests/sdk-build.sh"]

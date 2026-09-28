@@ -1,0 +1,11 @@
+# Native ARM64 OpenWrt userland reference; Docker still supplies the host kernel.
+FROM alpine:3.23 AS fetch
+RUN wget -O /rootfs.tar.gz https://downloads.openwrt.org/releases/24.10.5/targets/armsr/armv8/openwrt-24.10.5-armsr-armv8-rootfs.tar.gz \
+    && echo 'f8f6bba184d691365e15bf6241a3f88afe7af47fc443c6e9ee5de15e1c9d6d43  /rootfs.tar.gz' | sha256sum -c - \
+    && mkdir /rootfs && tar xzf /rootfs.tar.gz -C /rootfs
+FROM scratch
+COPY --from=fetch /rootfs/ /
+RUN mkdir -p /var/lock && opkg update \
+    && opkg install python3 nginx-full nginx-mod-stream ip-full rpcd luci-base nftables-json firewall4 kmod-nft-socket
+WORKDIR /src
+CMD ["/bin/sh", "/src/tests/openwrt-userland.sh"]
