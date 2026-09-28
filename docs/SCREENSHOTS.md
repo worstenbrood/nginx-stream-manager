@@ -1,44 +1,68 @@
-# LuCI screenshots — 0.5.0 and 0.4.0
+# LuCI screenshots — 0.5.0
 
-## New in 0.5.0: monitoring
+New captures of all seven main tabs and all six service tabs, taken on 28 September 2026 in the real, authenticated LuCI interface of a local OpenWrt 25.12.5 container. The ASUS router was not modified.
 
-Real LuCI interface in the local OpenWrt test container. The TCP probe checks the local test web server on loopback. The certificate is a temporary self-signed demo certificate with a short validity period; no router certificate was copied.
+The traffic and timing graphs contain **synthetic demo data**, not router traffic. The three documentation addresses in the history are examples; the distribution does not prove actual backup traffic. Monitoring shows a real TCP probe to the local test web server on loopback. No certificates are configured in this fixture. Configuration was changed for that probe after the traffic history was generated.
 
-![Monitoring with health status and certificate warning](screenshots/monitoring-0.5.png)
+## Overview
 
-## New in 0.5.0: connection times
+![Service overview](screenshots/overview.png)
 
-The graph shows mean connection times per upstream with **synthetic demo data**, not measured ASUS router traffic. Missing recent samples appear as a gap, not as a measured time of zero.
+## Configuration
 
-![Connection-time graph with demo data](screenshots/timing-0.5.png)
+The long configuration page is captured in two images.
 
-## Earlier 0.4.0 views
+![Global settings](screenshots/configuration-global.png)
 
-These images were captured on 28 September 2026 in the real, authenticated LuCI interface of a local OpenWrt 25.12.5 container. They are not designs or recreated screens. The ASUS router was not modified.
+![Pools, backends, services and routes](screenshots/configuration.png)
 
-## Traffic per upstream server
+## Import Nginx
 
-The three lines show **synthetic demo data** for three documentation addresses. The view shows sent volume per minute from completed sessions, with totals and share per upstream. This is not a live bandwidth measurement and the example distribution does not prove actual backup traffic.
+![Importing an existing Nginx configuration](screenshots/import.png)
 
-![Traffic graph with three upstream servers](screenshots/traffic.png)
+## Configuration tools
 
-## Pools, backends and services
+![Snapshots, backup, duplication and SNI route test](screenshots/tools.png)
 
-The middle backend is configured as a backup. Backup and administratively down status appear directly in the overview.
+## Traffic
 
-![Configuration with a backup server](screenshots/configuration.png)
+![Sent volume per upstream](screenshots/traffic.png)
 
-## Service overview
+![Mean connection times per upstream](screenshots/timing-0.5.png)
 
-The manager runs in the test container with one TCP listener on loopback.
+## Monitoring
 
-![Running manager](screenshots/overview.png)
+![Active health check](screenshots/monitoring-0.5.png)
 
-## TLS and SNI routing
+## Logs
 
-The edit dialog shows TLS inspection without decryption and SNI routing. These choices were selected for the screenshot and then discarded; they were not applied to the demo service.
+The manager log is empty in this fresh test environment.
 
-![TLS and SNI settings](screenshots/tls-routing.png)
+![Log viewer](screenshots/logs.png)
+
+## Service: General
+
+![General service settings](screenshots/service-general.png)
+
+## Service: Network and access
+
+![Network and access rules](screenshots/service-network.png)
+
+## Service: Proxy and failover
+
+![Proxy and failover settings](screenshots/service-proxy.png)
+
+## Service: Logging
+
+![Logging and traffic history](screenshots/service-logging.png)
+
+## Service: Listener and limits
+
+![Listener and connection limits](screenshots/service-limits.png)
+
+## Service: TLS and routing
+
+![TLS and pool routing](screenshots/tls-routing.png)
 
 ## Starting the local preview yourself
 

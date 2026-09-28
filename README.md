@@ -30,9 +30,9 @@ New in 0.4.0: extended failover/balancing, DNS/UNIX upstreams, TLS termination a
 
 ## Screenshots
 
-Real LuCI 0.4.0 interface in a local OpenWrt 25.12.5 test container. The graph contains **synthetic demo data**, not router traffic.
+Real LuCI 0.5.0 interface in a local OpenWrt 25.12.5 test container. The graph contains **synthetic demo data**, not router traffic.
 
-Also available: [0.5.0 monitoring and connection-time graphs](docs/SCREENSHOTS.md), checked in the same local OpenWrt environment.
+View [all seven main tabs, six service tabs and the connection-time graph](docs/SCREENSHOTS.md).
 
 ![Traffic per upstream server](docs/screenshots/traffic.png)
 
