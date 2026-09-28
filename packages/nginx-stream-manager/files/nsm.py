@@ -18,7 +18,7 @@ import sys
 import tempfile
 import time
 
-VERSION = '0.2.1'
+VERSION = '0.3.0'
 RUN = Path('/var/run/nginx-stream-manager')
 LOG = Path('/var/log/nginx-stream-manager')
 CONFIG = 'nginx_stream_manager'
@@ -231,7 +231,7 @@ def compile_config(sections, module=True):
             item[key] = integer(s.get(key, default), lo, hi, key)
         response = s.get('udp_responses', '')
         item['udp_responses'] = None if response == '' else integer(response, 0, 1000000, 'UDP responses')
-        for key in ('access_log', 'keepalive', 'half_close', 'proxy_protocol'):
+        for key in ('access_log', 'traffic_history', 'keepalive', 'half_close', 'proxy_protocol'):
             item[key] = flag(s, key)
         if item['proxy_protocol'] and 'udp' in protos:
             raise Invalid('PROXY protocol output is supported for TCP services only')
@@ -266,6 +266,8 @@ def compile_config(sections, module=True):
             lines.append('    server %s %s;' % (endpoint(b['ip'], b['port']), opts))
         lines.append('  }')
     for s in services:
+        if s['traffic_history']:
+            lines.append('  log_format traffic_%s escape=json \'{"service":"%s","time":"$msec","protocol":"$protocol","upstream":"$upstream_addr","sent":"$upstream_bytes_sent","received":"$upstream_bytes_received"}\';' % (s['sid'], s['sid']))
         for proto in s['protos']:
             lines += ['  server {', '    listen %s%s%s;' % (endpoint(s['ip'], s['port']),
                       (' udp' if proto == 'udp' else '') + ' reuseport' + (' bind' if not s['ip'].is_unspecified else ''), ' ipv6only=on' if s['ip'].version == 6 else ''),
@@ -274,7 +276,12 @@ def compile_config(sections, module=True):
                       '    proxy_next_upstream on;', '    proxy_next_upstream_tries %d;' % s['next_upstream_tries'],
                       '    proxy_upload_rate %d;' % s['upload_rate'], '    proxy_download_rate %d;' % s['download_rate'],
                       '    error_log %s/%s.error.log warn;' % (LOG, s['sid'])]
-            lines.append('    access_log %s/%s.access.log nsm;' % (LOG, s['sid']) if s['access_log'] else '    access_log off;')
+            if s['access_log']:
+                lines.append('    access_log %s/%s.access.log nsm;' % (LOG, s['sid']))
+            if s['traffic_history']:
+                lines.append('    access_log %s/traffic.log traffic_%s;' % (LOG, s['sid']))
+            if not s['access_log'] and not s['traffic_history']:
+                lines.append('    access_log off;')
             if s['transparent']:
                 lines.append('    proxy_bind $remote_addr transparent;')
             if proto == 'udp':
@@ -300,6 +307,7 @@ def compile_config(sections, module=True):
             'fw4': '\n'.join(firewall) + '\n',
             'return_interfaces': sorted({r[0] for r in returns}),
             'families': sorted(families), 'warnings': warnings, 'log_mb': log_mb,
+            'traffic_services': [s['sid'] for s in services if s['traffic_history']],
             'services': [{'id': s['sid'], 'listen': endpoint(s['ip'], s['port']), 'protocol': s['protocol'],
                           'pool': s['pool'], 'transparent': s['transparent']} for s in services]}
 
@@ -662,14 +670,194 @@ def logs(args):
     lines = integer(args.get('lines', 500), 1, 1000, 'Lines')
     return dict(ok=True, **tail_file(LOG / (name + '.' + kind + '.log'), lines))
 
+TRAFFIC_CELLS = 8192
+TRAFFIC_SERIES = 256
+TRAFFIC_READ = 2 * 1024 * 1024
+TRAFFIC_RETENTION = 86400
+
+
+def traffic_record(raw, now):
+    record = json.loads(raw)
+    sid = ident(record['service'])
+    proto = record['protocol']
+    if proto not in ('TCP', 'UDP'):
+        raise Invalid('Invalid traffic protocol')
+    timestamp = float(record['time'])
+    if not now - TRAFFIC_RETENTION <= timestamp <= now + 60:
+        return []
+    minute = int(timestamp) // 60 * 60
+    peers = record['upstream'].split(', ')
+    sent, received = record['sent'].split(', '), record['received'].split(', ')
+    if not len(peers) == len(sent) == len(received) or len(peers) > 100:
+        raise Invalid('Unaligned upstream counters')
+    rows = []
+    for peer, tx, rx in zip(peers, sent, received):
+        if peer == '-' or peer.startswith('pool_'):
+            continue  # No upstream was selected.
+        match = re.fullmatch(r'(?:\[([^\]]+)\]|([^:]+)):([0-9]+)', peer)
+        if not match:
+            raise Invalid('Invalid traffic endpoint')
+        target = endpoint(address(match[1] or match[2]), integer(match[3], 1, 65535, 'Port'))
+        # Missing values represent unsuccessful/unavailable measurements, not zero bytes.
+        if tx == '-' or rx == '-':
+            raise Invalid('Missing upstream counter')
+        rows.append((sid + '|' + proto + '|' + target, str(minute),
+                     integer(tx, 0, 2**63 - 1, 'Sent bytes'), integer(rx, 0, 2**63 - 1, 'Received bytes')))
+    return rows
+
+
+def trim_traffic(data, now):
+    for key in list(data['series']):
+        bins = data['series'][key]
+        for stamp in list(bins):
+            if int(stamp) < now - TRAFFIC_RETENTION or int(stamp) > now + 60:
+                del bins[stamp]
+        if not bins:
+            del data['series'][key]
+    if len(data['series']) > TRAFFIC_SERIES:
+        keys = sorted(data['series'], key=lambda k: max(map(int, data['series'][k])))
+        for key in keys[:len(keys) - TRAFFIC_SERIES]:
+            del data['series'][key]
+        data['limited_at'] = now
+    cells = [(int(stamp), key) for key, bins in data['series'].items() for stamp in bins]
+    if len(cells) > TRAFFIC_CELLS:
+        for stamp, key in sorted(cells)[:len(cells) - TRAFFIC_CELLS]:
+            del data['series'][key][str(stamp)]
+            if not data['series'][key]:
+                del data['series'][key]
+        data['limited_at'] = now
+
+
+def collect_traffic(now=None):
+    """Called under locked(). Cursor and aggregates commit together, including across rename rotation."""
+    now = int(time.time() if now is None else now)
+    path = RUN / 'traffic.json'
+    try:
+        data = json.loads(bounded_read(path, 2 * 1024 * 1024))
+        if data.get('version') != 1:
+            raise ValueError('Unknown traffic state version')
+    except FileNotFoundError:
+        data = {'version': 1, 'series': {}, 'cursors': {}, 'started': now, 'limited_at': 0}
+    trim_traffic(data, now)
+    remaining, visible = TRAFFIC_READ, set()
+    for log in (LOG / 'traffic.log.1', LOG / 'traffic.log'):
+        try:
+            stream = log.open('rb')
+        except FileNotFoundError:
+            continue
+        with stream:
+            stat = os.fstat(stream.fileno())
+            key = '%s:%s' % (stat.st_dev, stat.st_ino)
+            visible.add(key)
+            cursor = data['cursors'].setdefault(key, {'offset': 0, 'size': 0, 'discard': False})
+            anchor = cursor.get('anchor', 0)
+            changed = anchor and hashlib.sha256(stream.read(anchor)).hexdigest() != cursor.get('digest')
+            if stat.st_size < cursor['offset'] or changed:
+                cursor.update(offset=0, discard=False)
+                data['limited_at'] = now
+            if not anchor or changed or stat.st_size < anchor:
+                stream.seek(0)
+                prefix = stream.read(min(128, stat.st_size))
+                cursor.update(anchor=len(prefix), digest=hashlib.sha256(prefix).hexdigest())
+            cursor['size'] = stat.st_size
+            stream.seek(cursor['offset'])
+            while remaining > 4096:
+                start = stream.tell()
+                raw = stream.readline(4097)
+                if not raw:
+                    break
+                remaining -= len(raw)
+                if cursor['discard']:
+                    cursor['offset'] = stream.tell()
+                    cursor['discard'] = not raw.endswith(b'\n')
+                    continue
+                if len(raw) > 4096:
+                    cursor.update(offset=stream.tell(), discard=not raw.endswith(b'\n'))
+                    data['limited_at'] = now
+                    continue
+                if not raw.endswith(b'\n'):
+                    stream.seek(start)  # Retry an unfinished write on the next collection.
+                    break
+                cursor['offset'] = stream.tell()
+                try:
+                    rows = traffic_record(raw, now)
+                except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+                    data['limited_at'] = now
+                    continue
+                for series, minute, tx, rx in rows:
+                    cell = data['series'].setdefault(series, {}).setdefault(minute, [0, 0, 0])
+                    cell[0] += tx
+                    cell[1] += rx
+                    cell[2] += 1  # Upstream attempts; retries may create more than one per session.
+                # Keep working memory bounded even during a large log catch-up.
+                if len(data['series']) > TRAFFIC_SERIES or sum(len(b) for b in data['series'].values()) > TRAFFIC_CELLS + 100:
+                    trim_traffic(data, now)
+    for key in list(data['cursors']):
+        if key not in visible:
+            if data['cursors'][key]['offset'] < data['cursors'][key]['size']:
+                data['limited_at'] = now
+            del data['cursors'][key]
+    trim_traffic(data, now)
+    atomic(path, json.dumps(data, separators=(',', ':')))
+    return data
+
+
+def traffic(args):
+    sid = ident(args.get('service', ''))
+    if sid not in {s['.name'] for s in read_config() if s['.type'] == 'service'}:
+        raise Invalid('Unknown service')
+    hours, proto, selected = args.get('hours', 1), args.get('protocol', 'all'), args.get('upstream', '')
+    if hours not in (1, 6, 24) or proto not in ('all', 'TCP', 'UDP') or len(selected) > 80:
+        raise Invalid('Invalid traffic selection')
+    now = int(time.time())
+    step = {1: 60, 6: 300, 24: 900}[hours]
+    end = now // step * step
+    start = end - hours * 3600 + step
+    with locked():
+        data = collect_traffic(now)
+        active = sid in (state() or {}).get('traffic_services', [])
+    peers = {}
+    for key, bins in data['series'].items():
+        service, protocol, peer = key.split('|')
+        if service != sid or (proto != 'all' and protocol != proto):
+            continue
+        result = peers.setdefault(peer, {'upstream': peer, 'sent': 0, 'received': 0, 'attempts': 0, 'points': {}})
+        for stamp, values_ in bins.items():
+            bucket = int(stamp) // step * step
+            if start <= bucket <= end:
+                result['sent'] += values_[0]
+                result['received'] += values_[1]
+                result['attempts'] += values_[2]
+                cell = result['points'].setdefault(bucket, [0, 0])
+                cell[0] += values_[0]
+                cell[1] += values_[1]
+    names = sorted(peers, key=lambda p: (-peers[p]['sent'], p))
+    if selected and selected not in peers:
+        names_to_show = []
+    else:
+        names_to_show = [selected] if selected else names[:8]
+    series = []
+    for peer in names_to_show:
+        result = peers[peer]
+        result['points'] = [result['points'].get(t, [0, 0]) for t in range(start, end + 1, step)]
+        series.append(result)
+    return {'ok': True, 'enabled': active, 'start': start, 'step': step, 'now': now,
+            'started': data['started'], 'endpoints': names, 'series': series,
+            'omitted': max(0, len(names) - len(series)),
+            'limited': data['limited_at'] > 0 and data['limited_at'] >= now - TRAFFIC_RETENTION,
+            'pending': any(c['offset'] < c['size'] for c in data['cursors'].values())}
+
+
 def rotate():
     with locked():
+        collect_traffic()
         old = state()
         if not old:
             return {'ok': True}
         changed = False
         for p in LOG.glob('*.log'):
-            if p.is_file() and p.stat().st_size > old['log_mb'] * 1024 * 1024:
+            limit = 512 * 1024 if p.name == 'traffic.log' else old['log_mb'] * 1024 * 1024
+            if p.is_file() and p.stat().st_size > limit:
                 os.replace(p, str(p) + '.1')
                 changed = True
         p = pid()
@@ -833,6 +1021,8 @@ def rpc(method, args):
         return status()
     if method == 'logs':
         return logs(args)
+    if method == 'traffic':
+        return traffic(args)
     if method in ('preview', 'validate'):
         with locked():
             c = prepare() if method == 'validate' else compile_config(read_config(), Path(MODULE).exists())
@@ -846,6 +1036,7 @@ def rpc(method, args):
     raise Invalid('Unknown method')
 
 SIGNATURES = {'import_preview': {}, 'import_commit': {'token': ''}, 'status': {}, 'preview': {}, 'validate': {},
+              'traffic': {'service': '', 'hours': 1, 'protocol': 'all', 'upstream': ''},
               'logs': {'service': 'manager', 'kind': 'error', 'lines': 500},
               'control': {'action': 'status'}}
 

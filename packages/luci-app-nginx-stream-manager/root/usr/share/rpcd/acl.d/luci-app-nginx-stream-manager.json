@@ -9,7 +9,8 @@
         "luci.nginx-stream-manager": [
           "status",
           "preview",
-          "logs"
+          "logs",
+          "traffic"
         ]
       }
     },

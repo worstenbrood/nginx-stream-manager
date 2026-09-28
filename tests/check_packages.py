@@ -93,7 +93,7 @@ def check(directory):
         else:
             for dep in ('luci-base', 'nginx-stream-manager'):
                 assert dep in fields['Depends'].split(', '), (dep, fields['Depends'])
-            for filename in ('config', 'overview', 'logs', 'import'):
+            for filename in ('config', 'overview', 'logs', 'import', 'traffic'):
                 assert 'www/luci-static/resources/view/nsm/' + filename + '.js' in data
             for directory in ('usr/share/rpcd/acl.d', 'usr/share/luci/menu.d'):
                 assert directory + '/luci-app-nginx-stream-manager.json' in data

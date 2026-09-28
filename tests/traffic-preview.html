@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NSM traffic development preview</title>
+<style>body{font:15px system-ui;margin:32px auto;padding:0 20px;max-width:1100px;color:#243248;background:#f7f9fc}main{background:white;padding:28px;border:1px solid #dbe3ee;border-radius:12px}select{padding:8px;border:1px solid #abb8c9;border-radius:5px;background:white}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #dbe3ee}p{line-height:1.6}.banner{background:#fff4d6;padding:12px}h2{font-size:26px}</style>
+<p class="banner">Development preview — generated demo traffic. Uses the actual traffic.js view with stubbed LuCI services.</p>
+<main id="app"></main>
+<script>
+window._ = function(s) { return s; };
+window.E = function(tag, attrs, children) {
+    var node = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function(k) {
+        if (typeof attrs[k] === 'function') node.addEventListener(k, attrs[k]);
+        else if (attrs[k] != null) node.setAttribute(k, attrs[k]);
+    });
+    function add(child) {
+        if (Array.isArray(child)) child.forEach(add);
+        else if (child != null) node.appendChild(child.nodeType ? child : document.createTextNode(String(child)));
+    }
+    add(children); return node;
+};
+window.view = { extend: function(v) { return v; } };
+window.uci = { load: function() { return Promise.resolve(); }, sections: function(c, t, fn) {
+    [{'.name':'dns',name:'DNS pool'}, {'.name':'empty',name:'Unconfigured history'}].forEach(fn);
+} };
+window.poll = { add: function(fn, seconds) { setInterval(fn, seconds * 1000); } };
+window.rpc = { declare: function() { return function(service, hours, protocol, selected) {
+    var now = Math.floor(Date.now() / 1000), step = {1:60,6:300,24:900}[hours], n = hours * 3600 / step;
+    var names = ['192.0.2.10:53', '192.0.2.11:53', '[2001:db8::12]:53'];
+    var series = names.filter(function(p) { return !selected || selected === p; }).map(function(peer) {
+        var k = names.indexOf(peer), points = Array.from({length:n}, function(_, i) {
+            var tx = Math.round((2 + Math.sin(i / 5 + k)) * (k + 1) * 16000 * (protocol === 'UDP' ? 2 : 1));
+            return [tx, tx * (k + 2)];
+        });
+        return {upstream:peer,points:points,sent:points.reduce(function(a,p){return a+p[0];},0),received:points.reduce(function(a,p){return a+p[1];},0),attempts:450+k*87};
+    });
+    return Promise.resolve({ok:true,enabled:service!=='empty',series:service==='empty'?[]:series,endpoints:service==='empty'?[]:names,start:Math.floor(now/step)*step-hours*3600+step,step:step,now:now,started:now-7200,limited:false,pending:false,omitted:0});
+} } };
+fetch('/packages/luci-app-nginx-stream-manager/htdocs/luci-static/resources/view/nsm/traffic.js').then(function(r){return r.text();}).then(function(source){
+    var page = new Function(source)();
+    return page.load().then(function(){document.getElementById('app').appendChild(page.render());});
+});
+</script></html>

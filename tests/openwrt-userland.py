@@ -62,6 +62,8 @@ class UDPServer6(socketserver.ThreadingUDPServer):
 servers = (
     socketserver.ThreadingTCPServer(('127.0.0.1', 19061), TCPReply),
     socketserver.ThreadingUDPServer(('127.0.0.1', 19061), UDPReply),
+    socketserver.ThreadingTCPServer(('127.0.0.1', 19062), TCPReply),
+    socketserver.ThreadingUDPServer(('127.0.0.1', 19062), UDPReply),
     TCPServer6(('::1', 19061), TCPReply),
     UDPServer6(('::1', 19061), UDPReply),
 )
@@ -83,7 +85,13 @@ config service 'testservice'
  option listen_address '127.0.0.1'
  option listen_port '19060'
  option open_firewall '1'
+ option traffic_history '1'
+ option udp_responses '1'
  list ingress_interface 'eth0'
+config backend 'testbackend2'
+ option pool 'testpool'
+ option address '127.0.0.1'
+ option port '19062'
 config pool 'testpool6'
 config backend 'testbackend6'
  option pool 'testpool6'
@@ -94,10 +102,28 @@ config service 'testservice6'
  option protocol 'both'
  option listen_address '::1'
  option listen_port '19060'
+ option traffic_history '1'
+ option udp_responses '1'
 """)
 assert rpc('validate')['ok']
 assert control('start')['running']
 check_forwarding()
+check_forwarding()
+for _ in range(30):
+    metrics = rpc('traffic', service='testservice', hours=1, protocol='all', upstream='')
+    if len(metrics.get('series', [])) == 2 and sum(s['attempts'] for s in metrics['series']) == 4:
+        break
+    time.sleep(.1)
+assert metrics['ok'] and len(metrics['series']) == 2, metrics
+assert all(s['sent'] > 0 and s['received'] > 0 for s in metrics['series']), metrics
+for service in ('testservice', 'testservice6'):
+    for protocol in ('TCP', 'UDP'):
+        measured = rpc('traffic', service=service, protocol=protocol)['series']
+        assert sum(s['sent'] for s in measured) == 2 * len(b'openwrt-test'), measured
+        assert sum(s['received'] for s in measured) == 2 * len(b'openwrt-test'), measured
+        assert sum(s['attempts'] for s in measured) == 2, measured
+assert rpc('traffic', service='testservice6')['series'][0]['upstream'] == '[::1]:19061'
+assert not metrics['limited'] and not metrics['pending'], metrics
 assert control('reload')['running']
 run('/etc/init.d/firewall', 'reload')
 assert rpc('status')['running']
@@ -120,4 +146,4 @@ assert 'nsm-listener-testservice' not in run('nft', 'list', 'chain', 'inet', 'fw
 assert not rpc('control', action='reboot')['ok']
 for server in servers:
     server.shutdown(); server.server_close()
-print('Actual UCI/rpcd/procd, TCP/UDP IPv4/IPv6, rejected reload/upgrade, firewall4 permits and cleanup: OK')
+print('Actual UCI/rpcd/procd, traffic history per upstream, TCP/UDP IPv4/IPv6, rejected reload/upgrade, firewall4 permits and cleanup: OK')

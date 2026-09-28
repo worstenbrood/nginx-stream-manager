@@ -1,8 +1,8 @@
-# Nginx Stream Manager 0.2.1
+# Nginx Stream Manager 0.3.0
 
 Generic LuCI application for TCP/UDP load balancing on OpenWrt, with optional client-IP preservation through `proxy_bind $remote_addr transparent`.
 
-**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. Both packages were built with the 24.10.5 and 25.12.5 SDKs, installed as IPK/APK and tested with real OpenWrt rpcd/procd, firewall4 and TCP/UDP over IPv4/IPv6 on the host kernel. The target router, reboot and LuCI browser operation remain separate acceptance tests. See [test results](docs/TESTING.md), [build instructions](docs/BUILDING.md) and the [technical review](docs/REVIEW-0.2.1.md).
+**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. The 0.3.0 APK packages were built with the 25.12.5 SDK and tested with real OpenWrt rpcd/procd, firewall4, TCP/UDP over IPv4/IPv6 and upstream traffic measurements on the host kernel. The earlier 0.2.1 version was also tested as a 24.10.5 IPK. The target router, reboot and full LuCI browser operation remain separate acceptance tests. See [test results](docs/TESTING.md), [build instructions](docs/BUILDING.md) and the [0.2.1 technical review](docs/REVIEW-0.2.1.md).
 
 ## Features
 
@@ -17,6 +17,7 @@ Generic LuCI application for TCP/UDP load balancing on OpenWrt, with optional cl
 - TCP keepalive, half-close, PROXY protocol v1 to compatible TCP backends.
 - UDP session limits and an optional expected number of replies.
 - Timeouts, per-connection rate limits, error logs and optional access logs.
+- Traffic graphs per load balancer and upstream server, showing sent/received bytes from completed TCP/UDP sessions and up to 24 hours of history in RAM.
 - Dedicated Nginx instance under procd; automatic restart after a crash.
 - Log rotation and a viewer that reads only the tail, limited to 8,000 bytes per request.
 - Package dependencies, kernel modules, installation/removal scripts, OpenWrt package sources and tests.
@@ -47,7 +48,13 @@ This version uses Python 3 for the backend. This simplifies validation and testi
 
 An Nginx provider and rpcd are also required. The manual installer adds `nginx-full` if no Nginx binary is present; the package declares the virtual dependency `nginx`. `kmod-nft-socket` pulls in `kmod-nf-socket` automatically. No TPROXY modules are added.
 
-## Upgrading from 0.1.0 or 0.2.0
+## Traffic graphs in 0.3.0
+
+Enable **Configuration → Traffic history** for the desired service. Select **Save & Apply** and start/reload the manager through Overview. Then open **Traffic** and select the load balancer, period (1/6/24 hours), protocol and upstream server. You will see sent and received bytes and their distribution across upstream servers.
+
+The graph processes **completed sessions**; it is not a live Mbit/s meter. Long-running TCP connections appear only after closing, and UDP appears after the Nginx session ends. History is stored in RAM, is bounded and is lost on reboot. This feature is disabled by default and records no client IP addresses. See [operation and limitations](docs/TRAFFIC.md).
+
+## Upgrading from an earlier version
 
 Stop Stream Manager before running the new installer:
 

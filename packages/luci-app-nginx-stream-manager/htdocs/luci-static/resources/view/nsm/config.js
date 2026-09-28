@@ -98,6 +98,7 @@ return view.extend({
         o = flag(s, 'proxy_protocol', _('Send PROXY protocol v1 to backend'), '0', _('TCP only. Enable only if the backend explicitly supports PROXY protocol.'));
         o.depends('protocol', 'tcp'); o.modalonly = true;
         o = flag(s, 'access_log', _('Access log'), '0', _('One record per completed session; client addresses are recorded.')); o.modalonly = true;
+        o = flag(s, 'traffic_history', _('Traffic history'), '0', _('Per-upstream byte totals for completed sessions. Up to 24 hours in RAM; no client IPs. Apply and reload to activate.')); o.modalonly = true;
         return m.render();
     }
 });

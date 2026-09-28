@@ -17,7 +17,7 @@ rm -f /etc/hotplug.d/iface/95-nginx-stream-manager
 rm -f /usr/share/nftables.d/chain-pre/input/90-nginx-stream-manager.nft
 rm -f /usr/share/luci/menu.d/luci-app-nginx-stream-manager.json
 rm -f /usr/share/rpcd/acl.d/luci-app-nginx-stream-manager.json
-rm -f /www/luci-static/resources/view/nsm/config.js /www/luci-static/resources/view/nsm/overview.js /www/luci-static/resources/view/nsm/logs.js /www/luci-static/resources/view/nsm/import.js
+rm -f /www/luci-static/resources/view/nsm/config.js /www/luci-static/resources/view/nsm/overview.js /www/luci-static/resources/view/nsm/logs.js /www/luci-static/resources/view/nsm/import.js /www/luci-static/resources/view/nsm/traffic.js
 /etc/init.d/firewall reload
 /etc/init.d/rpcd restart
 rm -f /tmp/luci-indexcache

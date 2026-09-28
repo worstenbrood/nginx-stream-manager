@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-28
+
+- New Traffic view with graphs per load balancer/upstream, sent and received bytes, TCP/UDP filter and periods of 1, 6 or 24 hours.
+- Optional session measurements without client IP addresses, independent of ordinary access logs. Bytes are added to the time graph at session completion; not a live bandwidth meter.
+- Bounded RAM history, incremental log processing, support for retries, IPv6, rotation and partial lines; notification of incomplete data.
+- New regression tests and real OpenWrt traffic measurements across multiple upstreams. LuCI view checked visually in isolation with demo data.
 
 - Fixed the missing OpenWrt buildroot signature in the LuCI Makefile; without that line the SDK could not find the frontend package.
 - Added a repeatable SDK build, IPK/APK content inspection and read-only router inventory targeting the ASUS TUF-AX6000 with OpenWrt 25.12.5.

@@ -1,4 +1,19 @@
-# Validation and test status — 0.2.1
+# Validation and test status
+
+## New traffic feature — 0.3.0
+
+Date: 28 September 2026.
+
+- 98 unit/regression/shell contract tests passed, including 11 new traffic-history tests: opt-in/privacy, retry/IPv6 association, partial lines, rotation, truncation/rewriting, invalid records, read/storage limits, RPC selection and atomic recovery.
+- Syntax checks passed for 9 shell scripts plus package hooks, 5 LuCI JavaScript files and 2 JSON files.
+- Both 0.3.0-r1 APK packages built with the official 25.12.5 SDK for mediatek/filogic; metadata and payload checked. Installation, runtime tests and removal using these APKs passed, including exact TCP/UDP byte volumes per address family. Local artifacts and build logs: `artifacts/0.3.0-openwrt-25.12.5/`. No new 24.10.5 IPK was built for 0.3.0.
+- Six real Linux network/Nginx integration tests and one detached process contract test passed. The transparent TCP/UDP test over IPv4/IPv6 ran separately with `NSM_NETNS=1`. The first invocation lacked required container permissions for process inspection; rerunning with the documented permissions passed.
+- Real OpenWrt 25.12.5 userspace: installation, rpcd/procd, firewall4, forwarding and counters for two IPv4 upstreams and one IPv6 upstream over TCP/UDP. The test also checks rejected reload and removal of an active installation.
+- The real `traffic.js` view was checked in the browser through `tests/traffic-preview.html` with synthetic data and LuCI stubs. Period, protocol, direction, individual IPv6 upstream and empty/inactive history checked; no JavaScript console errors. This does not prove integration with an authenticated LuCI session or a specific router theme.
+
+The log-based graph measures bytes at session completion, not live throughput. See [operation and capacity limits](TRAFFIC.md). The real router was not modified; reboot, kernel modules and full LuCI operation still require on-device acceptance.
+
+## Earlier validation — 0.2.1
 
 ## Performed in the development environment
 

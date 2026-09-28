@@ -27,6 +27,11 @@
       "path": "nsm/config"
     }
   },
+  "admin/services/nginx-stream-manager/traffic": {
+    "title": "Traffic",
+    "order": 28,
+    "action": { "type": "view", "path": "nsm/traffic" }
+  },
   "admin/services/nginx-stream-manager/logs": {
     "title": "Logs",
     "order": 30,
