@@ -1,0 +1,46 @@
+{
+  "admin/services/nginx-stream-manager": {
+    "title": "Stream Manager",
+    "order": 60,
+    "action": {
+      "type": "firstchild"
+    },
+    "depends": {
+      "acl": [
+        "luci-app-nginx-stream-manager"
+      ]
+    }
+  },
+  "admin/services/nginx-stream-manager/overview": {
+    "title": "Overview",
+    "order": 10,
+    "action": {
+      "type": "view",
+      "path": "nsm/overview"
+    }
+  },
+  "admin/services/nginx-stream-manager/config": {
+    "title": "Configuration",
+    "order": 20,
+    "action": {
+      "type": "view",
+      "path": "nsm/config"
+    }
+  },
+  "admin/services/nginx-stream-manager/logs": {
+    "title": "Logs",
+    "order": 30,
+    "action": {
+      "type": "view",
+      "path": "nsm/logs"
+    }
+  },
+  "admin/services/nginx-stream-manager/import": {
+    "title": "Import Nginx",
+    "order": 25,
+    "action": {
+      "type": "view",
+      "path": "nsm/import"
+    }
+  }
+}

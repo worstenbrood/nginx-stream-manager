@@ -1,0 +1,7 @@
+#!/bin/sh
+trap 'exit 0' TERM INT
+while :; do
+	/usr/libexec/nginx-stream-manager rotate >/dev/null 2>&1
+	sleep 30 &
+	wait "$!"
+done

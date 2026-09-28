@@ -1,0 +1,30 @@
+{
+  "luci-app-nginx-stream-manager": {
+    "description": "Manage Nginx Stream Manager only",
+    "read": {
+      "uci": [
+        "nginx_stream_manager"
+      ],
+      "ubus": {
+        "luci.nginx-stream-manager": [
+          "status",
+          "preview",
+          "logs"
+        ]
+      }
+    },
+    "write": {
+      "uci": [
+        "nginx_stream_manager"
+      ],
+      "ubus": {
+        "luci.nginx-stream-manager": [
+          "validate",
+          "control",
+          "import_preview",
+          "import_commit"
+        ]
+      }
+    }
+  }
+}

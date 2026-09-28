@@ -1,0 +1,200 @@
+# Nginx Stream Manager 0.2.0
+
+Generic LuCI application for TCP/UDP load balancing on OpenWrt, with optional client-IP preservation through `proxy_bind $remote_addr transparent`.
+
+**This is an initial implementation with source code and an installer, not a release tested on your router.** The included unit tests check the generator, input validation, log bounds and recovery paths. A real OpenWrt router, Nginx, nftables kernel and SDK were unavailable during development. Package builds and end-to-end network operation still need confirmation on your OpenWrt version.
+
+## Features
+
+- LuCI: overview, configuration, service management, configuration preview, validation, live logs and import of existing Nginx streams.
+- Freely configurable TCP, UDP and combined services.
+- Reusable backend pools with weights, backup servers, manual down status, maximum connections and passive failure detection.
+- Round-robin, least-connections and consistent hashing on client IP.
+- IPv4 and IPv6; a separate service per listening address/family.
+- Transparent upstream connections, targeted socket marking and policy routing for return traffic.
+- Optional firewall input permits per service, client interface and client CIDR.
+- Client CIDR access control in Nginx, independent of firewall permits.
+- TCP keepalive, half-close, PROXY protocol v1 to compatible TCP backends.
+- UDP session limits and an optional expected number of replies.
+- Timeouts, per-connection rate limits, error logs and optional access logs.
+- Dedicated Nginx instance under procd; automatic restart after a crash.
+- Log rotation and a viewer that reads only the tail, limited to 8,000 bytes per request.
+- Package dependencies, kernel modules, installation/removal scripts, OpenWrt package sources and tests.
+
+## Quick installation
+
+Extract the archive on a computer and copy the directory to the router, for example with SCP. Run there:
+
+```sh
+cd /tmp/nginx-stream-manager
+sh install.sh
+```
+
+The installer detects `apk` or `opkg`, installs dependencies and adds the application. It does not modify your existing `/etc/nginx/nginx.conf` or `/etc/config/network`. It reloads firewall4 and restarts rpcd to activate the new integration. Then log out of LuCI and back in.
+
+Menu: **Services → Stream Manager**.
+
+The manager is **disabled** on a fresh installation. Installation does not start new proxy listeners. Its UCI configuration is preserved on reinstallation. Stop the manager before updating an existing installation.
+
+Dependencies:
+
+```text
+luci-base nginx-full nginx-mod-stream python3 ip-full
+nftables-json firewall4 kmod-nft-socket kmod-nf-socket
+```
+
+This version uses Python 3 for the backend. This simplifies validation and testing but needs more storage than a ucode backend. Check free space on small routers. Kernel modules must come from feeds matching your running kernel exactly. Never force a different kernel version to bypass an installation error.
+
+## Upgrading from 0.1.0
+
+Stop Stream Manager before running the new installer:
+
+```sh
+/etc/init.d/nginx-stream-manager stop
+sh install.sh
+```
+
+Existing application configuration is preserved. Sign in to LuCI again to load the new RPC permissions and import view. To import, also disable **Enable manager** and apply that change. Your existing manually managed Nginx instance does not need to stop for this.
+
+## Importing an existing Nginx configuration
+
+New in 0.2.0: **Services → Stream Manager → Import Nginx**.
+
+1. Keep Stream Manager stopped and disabled.
+2. Select **Read nginx.conf and preview**.
+3. Check services, backend pools, source-IP preservation and any blocking messages.
+4. Select **Import disabled services** and confirm the specific preview.
+5. Review the imported configuration. For transparent services, add return interfaces and confirm the backend return route only after checking it.
+6. Migrate the old listeners and TPROXY rules, then activate the desired services.
+
+The source file `/etc/nginx/nginx.conf` is read only. Import adds application configuration, creates a backup and does not start or reload Nginx processes. Unsupported stream settings block import. External includes are not followed in this version.
+
+## Setting up the first service
+
+1. Create a backend pool, for example `application`, and save it.
+2. Add backend servers with their IP addresses and ports. Hostnames are deliberately unsupported in this version to keep addresses predictable for transparent routing.
+3. Create a service with a unique technical ID, for example `application_tcp`. Use letters, digits and underscores. `manager` is reserved.
+4. Choose the protocol, listening address, listening port and backend pool.
+5. Initially leave source-IP preservation disabled to test ordinary forwarding.
+6. Optionally enable **Manage firewall input permit** and specify explicit Linux client interfaces, for example `br-lan`. These are not UCI network names such as `lan`.
+7. Optionally specify allowed client CIDRs. An empty list means Nginx allows all clients admitted by the firewall.
+8. Enable **Enable manager** and select **Save & Apply**.
+9. Check **Overview** and the manager log. Use **Start** if the service is not running yet.
+10. Enable **Enable at boot** once the configuration works.
+
+`Save` alone stores LuCI changes in the session. Preview and Validate read the **committed UCI configuration**, not unapplied form values. `Save & Apply` commits and triggers the service. A rejected configuration can therefore be present in UCI while the old runtime configuration remains active; the error appears in Overview.
+
+## Preserving source IPs
+
+See [docs/TRANSPARENT.md](docs/TRANSPARENT.md) for the full explanation.
+
+For each transparent service:
+
+- choose a non-loopback listening address;
+- use backends with the same IP family as the listener;
+- enter the Linux interfaces on which backend replies reach the router;
+- verify the return route from backends to clients;
+- only then confirm **Backend return route verified**.
+
+The application manages table `inet nsm`, routing table `20100`, rule priority `10100` and mark bit `0x40000000`. These values are reserved for the application. Do not also use them for mwan3, PBR or other custom rules. The application checks occupancy of the routing table and priority on first activation; a full conflict analysis of all external mark users is not possible.
+
+Preservation concerns the **source IP**, not the original source port. If a backend shares the client's L2 subnet, merely setting its default gateway to the router is insufficient: replies may go directly to the client. A separate backend VLAN is usually easier to manage.
+
+## Firewall management
+
+The application uses the official firewall4 `chain-pre/input` include and its own nftables table for return marking. An optional service permit is limited to:
+
+- the specified client interfaces;
+- the IP family and optionally the specific listening address;
+- protocol and listening port;
+- optional client CIDRs.
+
+When such permits change, the application checks and reloads firewall4. Generated permits are removed on stop. Existing firewall rules are not removed: a broad ACCEPT elsewhere remains effective. Nginx CIDR checking therefore remains available too.
+
+WAN access is not opened automatically. For public access, deliberately specify the correct ingress device or manage a suitable firewall rule yourself. The OUTPUT policy must also allow router traffic to the backends.
+
+## Nginx alongside existing services
+
+The application uses the same Nginx binary and stream module, but a separate master with:
+
+```text
+config:  /var/run/nginx-stream-manager/nginx.conf
+pid:     /var/run/nginx-stream-manager/nginx.pid
+state:   /var/run/nginx-stream-manager/state.json
+logs:    /var/log/nginx-stream-manager/
+```
+
+LuCI/uhttpd and existing Nginx websites remain separate. Identical IP:port/protocol listeners must not be managed by the old and new instances simultaneously. With `reuseport`, Linux can distribute the same listener across both processes; this is not a safe migration. Stop the old listener first. Duplicate identical listeners within this application are detected before apply. Specific addresses, such as loopback, may coexist with a wildcard on the same port; the generator uses explicit socket binding and reuseport for this. Nginx reports conflicts with external processes when it actually binds; `nginx -t` does not prove that a port is free.
+
+A reload gives old workers at most 15 seconds to finish. Long-running connections and UDP sessions may therefore be interrupted. Changes to return rules may affect old transparent sessions sooner. This is not a hitless configuration change or a highly available cluster.
+
+## Migrating a manual configuration
+
+1. Save your current Nginx configuration, firewall includes and network configuration.
+2. Use **Import Nginx** to preview inline stream configuration and import it as disabled services. See [docs/IMPORT.md](docs/IMPORT.md). Alternatively, create the pools and services manually.
+3. Optionally test on an available high listening port with source-IP preservation disabled.
+4. Remove only the stream listeners being migrated from the old Nginx configuration; reload that existing instance.
+5. Disable old TPROXY includes that overlap with the migrated services. Do not leave broad port-interception rules alongside the new application.
+6. Remove only the old network rules/routes you added for that manual setup, once they serve no other purpose.
+7. Activate the application and test from a real client. Check which source IP reaches the backend and whether replies return.
+
+The installer does not perform this migration automatically. A script cannot reliably determine which existing rules are also used by other services.
+
+## Operation through SSH
+
+```sh
+/etc/init.d/nginx-stream-manager start
+/etc/init.d/nginx-stream-manager reload
+/etc/init.d/nginx-stream-manager stop
+/etc/init.d/nginx-stream-manager enable
+/etc/init.d/nginx-stream-manager disable
+
+/usr/libexec/nginx-stream-manager validate
+/usr/libexec/nginx-stream-manager preview
+/usr/libexec/nginx-stream-manager status
+ubus call luci.nginx-stream-manager logs '{"service":"manager","kind":"error","lines":100}'
+```
+
+`preview` through RPC bounds output for ubus. The complete active Nginx configuration is at the runtime path above.
+
+## Building packages
+
+No prebuilt or signed `.apk`/`.ipk` is included. The manual installer works without an SDK. For normal package distribution:
+
+1. Use the SDK/buildroot matching your OpenWrt release.
+2. Ensure the `packages` and `luci` feeds are present and dependencies are installed in the build tree.
+3. Copy both directories from `packages/` to the SDK's `package/` directory.
+4. Select `nginx-stream-manager` and `luci-app-nginx-stream-manager` in `make menuconfig`.
+5. Build:
+
+```sh
+make defconfig
+make package/nginx-stream-manager/compile V=s
+make package/luci-app-nginx-stream-manager/compile V=s
+```
+
+Build output follows your SDK's package format. The backend Makefile uses the standard OpenWrt package infrastructure; the LuCI Makefile uses `feeds/luci/luci.mk`. Build these packages in a matching SDK, not with ordinary desktop `make`.
+
+## Removal
+
+For a manual installation:
+
+```sh
+sh uninstall.sh
+```
+
+This stops the application, cleans up its active routing and firewall permits, removes application files and preserves UCI configuration, logs and shared dependencies. If you installed real packages, remove them through the package manager instead of this script.
+
+## Limitations of version 0.2.0
+
+- No interception of arbitrary transit traffic through TPROXY.
+- No HTTP URL routing, TLS termination, certificate management or SNI routing; TLS passthrough works as ordinary TCP traffic.
+- No active protocol-specific health checks or Nginx Plus API.
+- No hostname backends or automatic DNS re-resolution.
+- No automatic route changes on external backends.
+- No automatic sysctl changes; `rp_filter` considerations appear in status.
+- No live Nginx Plus statistics; the overview shows applied services, not invented health status.
+- Python backend; no guarantee this fits on a router with very limited flash storage.
+- Built for modern OpenWrt with firewall4 and JavaScript LuCI; specific release compatibility must be tested on the target device.
+
+See [docs/TESTING.md](docs/TESTING.md) for reproducible tests and the router acceptance procedure.

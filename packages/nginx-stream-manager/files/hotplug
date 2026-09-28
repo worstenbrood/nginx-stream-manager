@@ -1,0 +1,4 @@
+#!/bin/sh
+case "$ACTION" in
+	ifup|ifupdate) /usr/libexec/nginx-stream-manager restore >/dev/null 2>&1 ;;
+esac

@@ -1,0 +1,5 @@
+# Only packets already matched to a transparent socket and our reserved mark.
+meta mark & 0x40000000 == 0x40000000 meta l4proto { tcp, udp } socket transparent 1 counter accept comment "nsm-transparent-return"
+
+# Runtime listener permits; wildcard matches no files while stopped or before boot.
+include "/var/run/nginx-stream-manager/fw4-input*.nft"
