@@ -221,7 +221,9 @@ class Operations:
             if action == 'list':
                 items = [read_json(n, p, {}, MAX_CONFIG*2) for p in HISTORY.glob('*.json')]
                 return {'ok': True, 'items': [{k: s[k] for k in ('id', 'time', 'label')} for s in sorted(items, key=lambda s: s['time'], reverse=True)[:10]],
-                        'sections': [{'id': s['.name'], 'type': s['.type']} for s in current if s['.type'] in ('service', 'pool')]}
+                        'sections': [{'id': s['.name'], 'type': s['.type'],
+                                      'pool': s.get('pool', ''), 'address': s.get('address', ''), 'port': s.get('port', '')}
+                                     for s in current if s['.type'] in ('service', 'pool', 'backend')]}
             if action == 'export':
                 return {'ok': True, 'content': json.dumps({'format': 'nsm-config-1', 'config': raw.decode()}, indent=2)}
             if action == 'snapshot':
@@ -257,14 +259,15 @@ class Operations:
             elif action == 'rename':
                 name = n.ident(args.get('name', ''))
                 source = next((s for s in current if s['.name'] == args.get('source')), None)
-                if not source or source['.type'] not in ('pool', 'service') or name in {s['.name'] for s in current}:
-                    raise n.Invalid('Choose an existing service/pool and a unique new name')
+                if not source or source['.type'] not in ('pool', 'service', 'backend') or name in {s['.name'] for s in current}:
+                    raise n.Invalid('Choose an existing service, pool or backend and a unique new name')
                 if source['.type'] == 'service' and name == 'manager':
                     raise n.Invalid('Service name manager is reserved for the manager log')
                 candidate = copy.deepcopy(current)
                 old = source['.name']
                 # Update references in disabled sections too, before validating the full candidate.
-                references = {'backend': 'pool', 'service': 'pool', 'route': 'pool'} if source['.type'] == 'pool' else {'route': 'service'}
+                references = {'pool': {'backend': 'pool', 'service': 'pool', 'route': 'pool'},
+                              'service': {'route': 'service'}, 'backend': {}}[source['.type']]
                 for section in candidate:
                     if section['.name'] == old:
                         section['.name'] = name

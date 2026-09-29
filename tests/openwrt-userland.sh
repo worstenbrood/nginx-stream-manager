@@ -41,7 +41,7 @@ done
 ubus -v list luci.nginx-stream-manager
 python3 /src/tests/openwrt-userland.py
 # Exercise uninstall hooks with a running instance as well as the earlier explicit stop.
-uci set nginx_stream_manager.testbackend.port=19061
+uci set nginx_stream_manager.renamed_backend.port=19061
 uci commit nginx_stream_manager
 /etc/init.d/nginx-stream-manager start
 cp /etc/config/nginx_stream_manager /tmp/nsm-config-before-remove

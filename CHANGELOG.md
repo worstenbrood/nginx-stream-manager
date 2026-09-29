@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 — 2026-09-29
+
+- Rename individual backend section IDs, including generated import IDs, through the existing preview and commit workflow.
+- Show backend pool, address and port in the section selector. Backend renames preserve all settings and do not rename their pool or service.
+- Disable duplication for individual backends; pool and service duplication remain available.
+- Current configuration exports use the new backend ID. Existing snapshots and events keep their historical names; health checks start fresh, while traffic history retains its service/upstream-address identity.
+- Add backend rename/export regression coverage and extend OpenWrt package acceptance to rename a backend before testing forwarding.
+
 ## 0.6.0 — 2026-09-29
 
 - Rename pool and service section IDs through Configuration tools, with preview, stale-token protection, validation and a backup before commit.

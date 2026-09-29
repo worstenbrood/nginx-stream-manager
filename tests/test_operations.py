@@ -136,7 +136,7 @@ class OperationsTests(unittest.TestCase):
         before = nsm.APP_CONFIG.read_bytes()
         for source, name in [('application', 'application'), ('application', 'node_a'), ('application', 'main'),
                              ('application', ''), ('application', 'bad-name'), ('application', 'x'*49),
-                             ('application_tcp', 'manager'), ('missing', 'new'), ('node_a', 'new'), ('main', 'new')]:
+                             ('application_tcp', 'manager'), ('missing', 'new'), ('main', 'new')]:
             with self.subTest(source=source, name=name), self.assertRaises(nsm.Invalid):
                 nsm.ops().backup({'action': 'rename', 'source': source, 'name': name})
         self.assertEqual(nsm.APP_CONFIG.read_bytes(), before)
@@ -150,6 +150,50 @@ class OperationsTests(unittest.TestCase):
         nsm.APP_CONFIG.write_bytes(before + b'\n')
         with self.assertRaisesRegex(nsm.Invalid, 'changed'):
             nsm.ops().backup({'action': 'commit', 'token': preview['token']})
+
+    def test_rename_imported_backend_changes_only_its_id_and_exports_new_id(self):
+        backend = next(s for s in self.sections if s['.type'] == 'backend')
+        backend.update({'.name': 'imp_deadbeef_pool_1_b1', 'health_check': 'tcp'})
+        self.write()
+        listing = nsm.ops().backup({'action': 'list'})['sections']
+        item = next(s for s in listing if s['id'] == backend['.name'])
+        self.assertEqual((item['type'], item['pool'], item['address'], item['port']),
+                         ('backend', backend['pool'], backend['address'], backend['port']))
+        before = nsm.APP_CONFIG.read_bytes()
+        history = nsm.RUN/'traffic.json'; history.write_text('{"series":{}}')
+        preview = nsm.ops().backup({'action': 'rename', 'source': backend['.name'], 'name': 'primary_backend'})
+        self.assertEqual(nsm.APP_CONFIG.read_bytes(), before)
+        with patch.object(nsm, 'preflight'):
+            nsm.ops().backup({'action': 'commit', 'token': preview['token']})
+        expected = copy.deepcopy(self.sections)
+        next(s for s in expected if s['.name'] == backend['.name'])['.name'] = 'primary_backend'
+        self.assertEqual(nsm.read_config(), expected)
+        exported = json.loads(nsm.ops().backup({'action': 'export'})['content'])['config']
+        self.assertNotIn(backend['.name'], exported)
+        self.assertEqual(nsm.parse_uci(exported), expected)
+        self.assertEqual(history.read_text(), '{"series":{}}')
+        saved = json.loads(next(nsm_ops.HISTORY.glob('*.json')).read_text())
+        self.assertEqual(saved['config'].encode(), before)
+        monitor = nsm.ops().monitor()
+        self.assertEqual(next(b for b in monitor['backends'] if b['id'] == 'primary_backend')['status'], 'unknown')
+
+    def test_backend_rename_rejects_bad_names_and_duplicate_backend_action(self):
+        before = nsm.APP_CONFIG.read_bytes()
+        for name in ('node_a', 'node_b', 'application', 'application_tcp', '', 'bad-id', 'x'*49):
+            with self.subTest(name=name), self.assertRaises(nsm.Invalid):
+                nsm.ops().backup({'action': 'rename', 'source': 'node_a', 'name': name})
+        with self.assertRaises(nsm.Invalid):
+            nsm.ops().backup({'action': 'duplicate', 'source': 'node_a', 'name': 'new_backend'})
+        self.assertEqual(nsm.APP_CONFIG.read_bytes(), before)
+
+    def test_disabled_backend_can_be_renamed_without_becoming_enabled(self):
+        backend = next(s for s in self.sections if s['.type'] == 'backend')
+        backend['enabled'] = '0'; self.write()
+        preview = nsm.ops().backup({'action': 'rename', 'source': backend['.name'], 'name': 'offline_backend'})
+        with patch.object(nsm, 'preflight'):
+            nsm.ops().backup({'action': 'commit', 'token': preview['token']})
+        renamed = next(s for s in nsm.read_config() if s['.name'] == 'offline_backend')
+        self.assertEqual(renamed, dict(backend, **{'.name': 'offline_backend'}))
 
     def test_invalid_import_does_not_modify_config(self):
         before = nsm.APP_CONFIG.read_bytes()

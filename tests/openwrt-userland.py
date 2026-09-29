@@ -167,12 +167,15 @@ assert preview['ok'], preview
 restored = rpc('config_tools', action='commit', token=preview['token'])
 assert restored['ok'] and not rpc('status')['running'], restored
 assert rpc('validate')['ok']
-for source, name in [('testpool', 'renamed_pool'), ('testservice', 'renamed_service')]:
+for source, name in [('testpool', 'renamed_pool'), ('testservice', 'renamed_service'), ('testbackend', 'renamed_backend')]:
     preview = rpc('config_tools', action='rename', source=source, name=name)
     assert preview['ok'] and name in preview['diff'], preview
     renamed = rpc('config_tools', action='commit', token=preview['token'])
     assert renamed['ok'] and not rpc('status')['running'], renamed
-assert run('uci', 'get', 'nginx_stream_manager.testbackend.pool').strip() == 'renamed_pool'
+assert run('uci', 'get', 'nginx_stream_manager.renamed_backend.pool').strip() == 'renamed_pool'
+renamed_export = json.loads(rpc('config_tools', action='export')['content'])['config']
+assert "config 'backend' 'testbackend'" not in renamed_export
+assert "config 'backend' 'renamed_backend'" in renamed_export
 assert run('uci', 'get', 'nginx_stream_manager.renamed_service.pool').strip() == 'renamed_pool'
 assert control('start')['running']
 check_forwarding()

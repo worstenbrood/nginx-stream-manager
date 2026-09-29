@@ -1,5 +1,15 @@
 # Validation and test status
 
+## Individual backend renaming — 0.6.1
+
+Date: 29 September 2026.
+
+- 139 unit/regression tests passed. Backend rename coverage checks imported IDs, preservation of settings and disabled state, exports containing the new ID, unchanged traffic history, historical snapshots, fresh health status, invalid/colliding IDs and rejection of individual backend duplication.
+- Static checks passed for 11 shell scripts plus package hooks, seven LuCI JavaScript files and two JSON files. JavaScript view regressions passed, including backend selection, rename requests, preview invalidation and disabling duplication for individual backends.
+- Real OpenWrt 25.12.5 userspace acceptance passed for manual installation: rename a pool, service and backend through RPC while stopped, inspect updated references and exported backend IDs, restart, verify TCP/UDP request/reply over IPv4/IPv6 and firewall permits, then stop and uninstall while preserving configuration.
+- Both 0.6.1-r1 APKs built with the official OpenWrt 25.12.5 SDK for mediatek/filogic. Architecture, metadata and byte-for-byte source payload checks passed. Installation, RPC rename/export, forwarding and uninstall acceptance also passed using these built packages. APKs, SHA256SUMS and logs are in `artifacts/0.6.1-openwrt-25.12.5/` (not tracked in Git). No new 24.10.5 IPK was built.
+- No router changes were performed. Container tests use the host kernel and do not validate router reboot or hardware behavior; procd reports unavailable cgroup permissions in Docker. No new real-browser acceptance run was performed.
+
 ## Pool and service renaming — 0.6.0
 
 Date: 29 September 2026.

@@ -13,16 +13,24 @@ return view.extend({
     handleSave: null, handleSaveApply: null, handleReset: null,
     load: function() { return Promise.all([request('list'), uci.load('nginx_stream_manager')]); },
     render: function(initial) {
-        var status = E('p', { role: 'status' }), preview = E('div'), snapshots = E('select', { 'aria-label': _('Snapshot') }), source = E('select', { 'aria-label': _('Source service or pool') });
+        var status = E('p', { role: 'status' }), preview = E('div'), snapshots = E('select', { 'aria-label': _('Snapshot') }), source = E('select', { 'aria-label': _('Source service, pool or backend') });
         var name = E('input', { type: 'text', placeholder: _('New unique section name'), 'aria-label': _('New section name') });
         var upload = E('input', { type: 'file', accept: '.json,application/json', 'aria-label': _('Configuration backup file') });
         var text = E('textarea', { rows: 6, style: 'width:100%', 'aria-label': _('Configuration backup JSON'), placeholder: _('Paste an exported configuration backup, or select its JSON file.') });
-        var token = '', commit;
+        var token = '', commit, duplicate, sourceTypes = Object.create(null);
+        function updateActions() { if (duplicate) duplicate.disabled = sourceTypes[source.value] === 'backend'; }
         function invalidate() { token = ''; if (commit) commit.disabled = true; preview.replaceChildren(); }
         function populate(data) {
             snapshots.replaceChildren(); source.replaceChildren();
             data.items.forEach(function(s) { snapshots.appendChild(E('option', { value: s.id }, new Date(s.time*1000).toLocaleString() + ' · ' + s.label + ' · ' + s.id.slice(0,8))); });
-            data.sections.forEach(function(s) { source.appendChild(E('option', { value: s.id }, s.type + ' · ' + s.id)); });
+            sourceTypes = Object.create(null);
+            data.sections.forEach(function(s) {
+                sourceTypes[s.id] = s.type;
+                var label = s.type + ' · ' + s.id;
+                if (s.type === 'backend') label += ' · ' + s.pool + ' · ' + s.address + (s.port ? ' · ' + s.port : '');
+                source.appendChild(E('option', { value: s.id }, label));
+            });
+            updateActions();
         }
         function show(r) {
             token = r.token; commit.disabled = false;
@@ -48,6 +56,7 @@ return view.extend({
             file.text().then(function(value) { text.value = value; }).catch(function(e) { status.textContent = e.message; });
         });
         [snapshots, source, name, text].forEach(function(el) { el.addEventListener('input', invalidate); el.addEventListener('change', invalidate); });
+        source.addEventListener('change', updateActions);
         var services = E('select', { 'aria-label': _('SNI service') }), hostname = E('input', { type: 'text', 'aria-label': _('Test SNI hostname'), placeholder: 'app.example.com' });
         function populateServices() {
             services.replaceChildren();
@@ -55,6 +64,7 @@ return view.extend({
         }
         populateServices();
         var result = E('p', { role: 'status' });
+        duplicate = button('Preview duplicate', function() { invalidate(); return request('duplicate', source.value, name.value).then(show); });
         populate(initial[0]);
         return E('div', {}, [E('h2', {}, _('Configuration tools')), E('p', {}, _('Up to 10 distinct snapshots, including configurations whose Nginx workers started successfully. This does not prove end-to-end forwarding. Restoring, importing, duplicating and renaming require a stopped manager and no pending LuCI edits. Backups contain settings and file paths, not certificates or keys.')),
             status, E('h3', {}, _('History and backup')), E('div', { style: 'display:flex;gap:.5em;flex-wrap:wrap' }, [snapshots,
@@ -66,11 +76,12 @@ return view.extend({
                 }); })]),
             E('h3', {}, _('Import configuration backup')), upload, text,
             button('Preview import', function() { invalidate(); return request('import', '', '', text.value).then(show); }),
-            E('h3', {}, _('Rename or duplicate service or pool')), E('p', {}, _('Enter a unique section ID using 1–48 letters, digits or underscores. Rename updates all backend, service and route references while preserving the display name and enabled state. To change only the display name, use Configuration → Edit.')),
+            E('h3', {}, _('Rename service, pool or backend')), E('p', {}, _('Enter a unique section ID using 1–48 letters, digits or underscores. Pool and service renames update references. Backend renames preserve the pool, address, port and all settings. To change only a pool or service display name, use Configuration → Edit.')),
+            E('p', {}, _('Backend health checks start with a fresh identity after renaming; traffic history remains tied to the service and upstream address. Existing snapshots and event history retain their original names. Individual backends cannot be duplicated here.')),
             E('p', {}, _('Renaming a service starts a new traffic-history identity; existing logs and history are not renamed. Update external scripts using the old ID. Duplicated services are disabled and include their routes; duplicated pools include their backends.')),
             E('div', {}, [source, name,
                 button('Preview rename', function() { invalidate(); return request('rename', source.value, name.value).then(show); }),
-                button('Preview duplicate', function() { invalidate(); return request('duplicate', source.value, name.value).then(show); })]),
+                duplicate]),
             E('h3', {}, _('Proposed configuration changes')), preview, commit,
             E('h3', {}, _('Test SNI routing')), E('p', {}, _('Uses committed configuration: exact names win, then the longest *.suffix match, then the default pool. A wildcard does not match its bare domain.')),
             E('div', {}, [services, hostname, button('Test route', function() { return testRoute(services.value, hostname.value).then(function(r) {

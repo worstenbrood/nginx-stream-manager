@@ -22,7 +22,7 @@ import types
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import nsm_ops
 
-VERSION = '0.6.0'
+VERSION = '0.6.1'
 RUN = Path('/var/run/nginx-stream-manager')
 LOG = Path('/var/log/nginx-stream-manager')
 CONFIG = 'nginx_stream_manager'

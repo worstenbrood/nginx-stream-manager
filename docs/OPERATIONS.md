@@ -1,4 +1,4 @@
-# Monitoring and management — 0.6.0
+# Monitoring and management — 0.6.1
 
 This version adds management features around the free TCP/UDP stream module. The Nginx baseline remains 1.26.3. No HTTP reverse-proxy manager has been added.
 
@@ -77,7 +77,7 @@ A **display name** is the human-readable label edited under **Configuration → 
 A **section ID** is the unique identifier shown in the Name column and used by references, RPC requests, generated configuration and service log/history keys. To change it:
 
 1. Save or discard pending configuration edits in all LuCI sessions, then stop the manager from **Overview**.
-2. Open **Configuration tools → Rename or duplicate service or pool**.
+2. Open **Configuration tools → Rename service, pool or backend** (called **Rename or duplicate service or pool** in 0.6.0).
 3. Select the existing pool or service and enter a new unique ID: 1–48 letters, digits or underscores. The service ID `manager` is reserved.
 4. Select **Preview rename** and review the diff. Preview alone changes no saved configuration.
 5. Select **Commit previewed configuration**. Validation and a backup run before the file is replaced. A stale preview, a running manager or a pending service action blocks commit.
@@ -86,3 +86,11 @@ A **section ID** is the unique identifier shown in the Name column and used by r
 Renaming a pool updates its backend references, default service pools and route destinations. Renaming a service updates route ownership. Disabled entries are included. Existing display names, enabled flags, backend IDs and other settings remain unchanged.
 
 Service logs and traffic history are not moved to the new ID. New completed sessions use the new service identity; old records retain the old one and expire under normal retention rules. Update external scripts or monitoring queries that refer to the old ID. Use a display-name edit when you only want a different label without changing these identities.
+
+## Renaming individual backends — 0.6.1
+
+The same rename workflow now accepts individual backend sections. The source selector shows each backend ID together with its pool, address and port, so imported IDs such as `imp_deadbeef_pool_1_b1` can be identified and replaced with a meaningful unique ID.
+
+Stop the manager, select the backend in **Configuration tools**, enter the new ID, choose **Preview rename**, review the diff and commit. The new ID must be unique across all configuration sections, including pools and services. Only the backend section ID changes: its pool membership, address, port, enabled/backup/down flags, weights and probe settings remain unchanged. Restart the manager explicitly after checking the configuration. Individual backend duplication is not offered.
+
+A new configuration export contains the renamed backend section. Existing snapshots and event history intentionally retain their original IDs. Renaming a pool does not automatically rename its backend sections; rename those individually if desired. Backend health starts with a new identity and must pass the configured success threshold again. Traffic measurements remain associated with the service and upstream address, so renaming only a backend does not reset that traffic history. Update external health-metric queries that use the old backend ID.

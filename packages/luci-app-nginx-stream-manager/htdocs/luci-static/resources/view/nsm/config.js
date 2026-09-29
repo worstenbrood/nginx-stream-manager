@@ -72,6 +72,7 @@ return view.extend({
 
         s = m.section(form.GridSection, 'backend', _('Backend servers'));
         s.anonymous = true; s.addremove = true; s.nodescriptions = true;
+        s.description = _('To rename a backend section ID, including imported imp_ IDs, use Configuration tools → Preview rename.');
         flag(s, 'enabled', _('Enabled'), '1');
         poolOption(s);
         o = value(s, 'address', _('IP, DNS name or unix:/path'), null, null, _('DNS names resolve at start/reload. Transparent mode requires literal IPs. UNIX upstreams require TCP.')); o.rmempty = false;

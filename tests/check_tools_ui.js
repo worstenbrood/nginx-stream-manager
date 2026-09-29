@@ -7,7 +7,7 @@ function E(tag, attrs, children) {
     const el = { tag, attrs: attrs || {}, children: [], value: '', disabled: false, handlers: {},
         appendChild(child) { this.children.push(child); },
         replaceChildren(...items) { this.children = items; },
-        addEventListener(event, fn) { this.handlers[event] = fn; }
+        addEventListener(event, fn) { const previous = this.handlers[event]; this.handlers[event] = () => { if (previous) previous(); fn(); }; }
     };
     if (Array.isArray(children)) el.children = children;
     else if (children !== undefined) el.children = [children];
@@ -15,7 +15,8 @@ function E(tag, attrs, children) {
 }
 let renamed = false, unloaded = false;
 const requests = [];
-const data = () => ({ ok: true, items: [], sections: [{ type: 'service', id: renamed ? 'new_service' : 'old_service' }] });
+const data = () => ({ ok: true, items: [], sections: [{ type: 'service', id: renamed ? 'new_service' : 'old_service' },
+    { type: 'backend', id: '__proto__', pool: 'pool', address: '192.0.2.10', port: '9000' }] });
 const rpc = { declare(spec) { return async (...args) => {
     assert.equal(spec.method, 'config_tools'); requests.push(args);
     if (args[0] === 'list') return data();
@@ -36,18 +37,27 @@ const field = label => elements.find(e => e.attrs['aria-label'] === label);
     view.render(await view.load());
     const commit = button('Commit previewed configuration');
     assert.equal(commit.disabled, true);
-    field('Source service or pool').value = 'old_service';
+    field('Source service, pool or backend').value = 'old_service';
     field('New section name').value = 'new_service';
     await button('Preview rename').attrs.click();
     assert.deepStrictEqual(requests.at(-1).slice(0, 3), ['rename', 'old_service', 'new_service']);
     assert.equal(commit.disabled, false);
+    field('Source service, pool or backend').value = '__proto__';
+    field('Source service, pool or backend').handlers.change();
+    assert.equal(button('Preview duplicate').disabled, true);
+    assert.equal(commit.disabled, true);
+    await button('Preview rename').attrs.click();
+    assert.deepStrictEqual(requests.at(-1).slice(0, 3), ['rename', '__proto__', 'new_service']);
+    field('Source service, pool or backend').value = 'old_service';
+    field('Source service, pool or backend').handlers.change();
+    assert.equal(button('Preview duplicate').disabled, false);
     field('New section name').handlers.input();
     assert.equal(commit.disabled, true);
     await button('Preview rename').attrs.click();
     await commit.attrs.click();
     assert.equal(commit.disabled, true);
     assert.equal(unloaded, true);
-    assert.equal(field('Source service or pool').children[0].attrs.value, 'new_service');
+    assert.equal(field('Source service, pool or backend').children[0].attrs.value, 'new_service');
     assert.equal(field('SNI service').children[0].attrs.value, 'new_service');
     console.log('LuCI rename preview, invalidation and selector refresh: OK');
 })().catch(error => { console.error(error); process.exitCode = 1; });

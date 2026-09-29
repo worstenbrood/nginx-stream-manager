@@ -1,10 +1,12 @@
-# Nginx Stream Manager 0.6.0
+# Nginx Stream Manager 0.6.1
 
 Generic LuCI application for TCP/UDP load balancing on OpenWrt, with optional client-IP preservation through `proxy_bind $remote_addr transparent`.
 
-**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. The 0.6.0 APK packages were built with the 25.12.5 SDK and tested with real OpenWrt rpcd/procd, firewall4, TCP/UDP over IPv4/IPv6 and upstream traffic measurements on the host kernel. The 0.5.0 authenticated LuCI interface was checked in the browser, including configuration dialogs and the graph. The 0.6.0 rename workflow has additional JavaScript view and OpenWrt RPC tests. The earlier 0.2.1 version was also tested as a 24.10.5 IPK. The target router, reboot and full on-device operation remain separate acceptance tests. See [test results](docs/TESTING.md), [build instructions](docs/BUILDING.md) and the [0.2.1 technical review](docs/REVIEW-0.2.1.md).
+**This is locally validated source code, not yet a release tested on your OpenWrt router.** In addition to unit tests, real Nginx, nftables and UCI tests ran in a disposable container. Separate client and backend network namespaces confirmed TCP/UDP source-IP preservation for IPv4 and IPv6. The 0.6.1 APK packages were built with the 25.12.5 SDK and tested with real OpenWrt rpcd/procd, firewall4, TCP/UDP over IPv4/IPv6 and upstream traffic measurements on the host kernel. The 0.5.0 authenticated LuCI interface was checked in the browser, including configuration dialogs and the graph. The 0.6.1 pool, service and backend rename workflows have additional JavaScript view and OpenWrt RPC tests. The earlier 0.2.1 version was also tested as a 24.10.5 IPK. The target router, reboot and full on-device operation remain separate acceptance tests. See [test results](docs/TESTING.md), [build instructions](docs/BUILDING.md) and the [0.2.1 technical review](docs/REVIEW-0.2.1.md).
 
 ## Features
+
+New in 0.6.1: rename individual backend IDs, including imported `imp_...` names, under **Configuration tools → Rename service, pool or backend**. Preview the change, then commit with the manager stopped. Backend settings and traffic history are preserved.
 
 New in 0.6.0: rename backend pool and service IDs from **Configuration tools**, with a preview and automatic reference updates. Display names remain editable through **Configuration → Edit**. See [renaming pools and services](docs/OPERATIONS.md#renaming-pools-and-services--060).
 
