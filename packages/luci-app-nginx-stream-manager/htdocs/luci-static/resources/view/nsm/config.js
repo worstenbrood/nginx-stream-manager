@@ -55,7 +55,7 @@ return view.extend({
 
         s = m.section(form.GridSection, 'pool', _('Backend pools'));
         s.anonymous = false; s.addremove = true; s.nodescriptions = true;
-        value(s, 'name', _('Display name'), null);
+        value(s, 'name', _('Display name'), null, null, _('Editable label. To rename the section ID and update references, use Configuration tools → Preview rename.'));
         o = option(s, form.ListValue, 'method', _('Balancing method'));
         o.value('round_robin', _('Weighted round-robin'));
         o.value('least_conn', _('Least connections'));
@@ -94,7 +94,7 @@ return view.extend({
         s.nsmTab = 'general';
         s.anonymous = false; s.addremove = true; s.nodescriptions = true;
         flag(s, 'enabled', _('Enabled'), '1');
-        value(s, 'name', _('Display name'), null);
+        value(s, 'name', _('Display name'), null, null, _('Editable label. To rename the section ID and update references, use Configuration tools → Preview rename.'));
         o = option(s, form.ListValue, 'protocol', _('Protocol'));
         o.value('tcp', 'TCP'); o.value('udp', 'UDP'); o.value('both', 'TCP + UDP'); o.default = 'tcp';
         o = value(s, 'listen_address', _('Listen IP'), '0.0.0.0', 'ipaddr', _('Use a separate service for IPv6. IPv6 listeners are IPv6-only.')); o.rmempty = false;

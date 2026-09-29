@@ -167,6 +167,17 @@ assert preview['ok'], preview
 restored = rpc('config_tools', action='commit', token=preview['token'])
 assert restored['ok'] and not rpc('status')['running'], restored
 assert rpc('validate')['ok']
+for source, name in [('testpool', 'renamed_pool'), ('testservice', 'renamed_service')]:
+    preview = rpc('config_tools', action='rename', source=source, name=name)
+    assert preview['ok'] and name in preview['diff'], preview
+    renamed = rpc('config_tools', action='commit', token=preview['token'])
+    assert renamed['ok'] and not rpc('status')['running'], renamed
+assert run('uci', 'get', 'nginx_stream_manager.testbackend.pool').strip() == 'renamed_pool'
+assert run('uci', 'get', 'nginx_stream_manager.renamed_service.pool').strip() == 'renamed_pool'
+assert control('start')['running']
+check_forwarding()
+assert 'nsm-listener-renamed_service' in run('nft', 'list', 'chain', 'inet', 'fw4', 'input')
+assert not control('stop')['running']
 for server in servers:
     server.shutdown(); server.server_close()
 print('Actual UCI/rpcd/procd, traffic history per upstream, TCP/UDP IPv4/IPv6, rejected reload/upgrade, firewall4 permits and cleanup: OK')

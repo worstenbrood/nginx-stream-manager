@@ -231,7 +231,7 @@ class Operations:
                 if not pending or args.get('token') != pending['token'] or time.time() > pending['expires'] or hashlib.sha256(raw).hexdigest() != pending['base']:
                     raise n.Invalid('Preview expired or configuration changed; preview again')
                 if n.pid() or n.command(['uci', 'changes', n.CONFIG]).stdout.strip():
-                    raise n.Invalid('Stop the manager and save/discard pending LuCI edits before restoring/importing/duplicating')
+                    raise n.Invalid('Stop the manager and save/discard pending LuCI edits before restoring/importing/duplicating/renaming')
                 candidate = n.read_config(pending['config'].encode())
                 n.preflight(n.compile_config(candidate))
                 self.snapshot('before-change')
@@ -254,6 +254,23 @@ class Operations:
                 if imported.get('format') != 'nsm-config-1' or not isinstance(imported.get('config'), str):
                     raise n.Invalid('Expected an exported nsm-config-1 backup')
                 candidate = n.read_config(imported['config'].encode())
+            elif action == 'rename':
+                name = n.ident(args.get('name', ''))
+                source = next((s for s in current if s['.name'] == args.get('source')), None)
+                if not source or source['.type'] not in ('pool', 'service') or name in {s['.name'] for s in current}:
+                    raise n.Invalid('Choose an existing service/pool and a unique new name')
+                if source['.type'] == 'service' and name == 'manager':
+                    raise n.Invalid('Service name manager is reserved for the manager log')
+                candidate = copy.deepcopy(current)
+                old = source['.name']
+                # Update references in disabled sections too, before validating the full candidate.
+                references = {'backend': 'pool', 'service': 'pool', 'route': 'pool'} if source['.type'] == 'pool' else {'route': 'service'}
+                for section in candidate:
+                    if section['.name'] == old:
+                        section['.name'] = name
+                    ref = references.get(section['.type'])
+                    if ref and section.get(ref) == old:
+                        section[ref] = name
             elif action == 'duplicate':
                 name = n.ident(args.get('name', ''))
                 source = next((s for s in current if s['.name'] == args.get('source')), None)

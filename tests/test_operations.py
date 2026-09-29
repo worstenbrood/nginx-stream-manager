@@ -94,6 +94,63 @@ class OperationsTests(unittest.TestCase):
         self.assertIn('copied_service', nsm.APP_CONFIG.read_text())
         self.assertEqual(len(list(nsm_ops.HISTORY.glob('*.json'))), 1)
 
+    def test_rename_pool_updates_all_references_without_changing_settings(self):
+        self.sections[-1].update(tls_mode='preread', routing='sni')
+        self.sections.append({'.type': 'route', '.name': 'rule', 'service': 'application_tcp', 'pool': 'application', 'match': '*.example.com'})
+        self.sections.append({'.type': 'service', '.name': 'disabled', 'enabled': '0', 'pool': 'application'})
+        self.sections.append({'.type': 'backend', '.name': 'disabled_backend', 'enabled': '0', 'pool': 'application'})
+        self.write()
+        before = nsm.APP_CONFIG.read_bytes()
+        preview = nsm.ops().backup({'action': 'rename', 'source': 'application', 'name': 'renamed_pool'})
+        self.assertEqual(nsm.APP_CONFIG.read_bytes(), before)
+        candidate = nsm.parse_uci(json.loads((nsm.RUN/'config-preview.json').read_text())['config'])
+        expected = copy.deepcopy(self.sections)
+        for s in expected:
+            if s['.name'] == 'application': s['.name'] = 'renamed_pool'
+            if s.get('pool') == 'application': s['pool'] = 'renamed_pool'
+        self.assertEqual(candidate, expected)
+        with patch.object(nsm, 'preflight') as preflight:
+            nsm.ops().backup({'action': 'commit', 'token': preview['token']})
+        preflight.assert_called_once()
+        self.assertEqual(nsm.read_config(), expected)
+        self.assertEqual(json.loads(next(nsm_ops.HISTORY.glob('*.json')).read_text())['config'].encode(), before)
+
+    def test_rename_service_updates_routes_and_preserves_history(self):
+        self.sections[-1].update(tls_mode='preread', routing='sni')
+        self.sections.append({'.type': 'route', '.name': 'rule', 'service': 'application_tcp', 'pool': 'application', 'match': '*.example.com'})
+        self.sections.append({'.type': 'route', '.name': 'disabled_rule', 'enabled': '0', 'service': 'application_tcp', 'pool': 'application', 'match': 'unused.example.com'})
+        self.write()
+        history = nsm.RUN/'traffic.json'; history.write_text('{"series":{}}')
+        preview = nsm.ops().backup({'action': 'rename', 'source': 'application_tcp', 'name': 'renamed_service'})
+        expected = copy.deepcopy(self.sections)
+        for s in expected:
+            if s['.name'] == 'application_tcp': s['.name'] = 'renamed_service'
+            if s.get('service') == 'application_tcp': s['service'] = 'renamed_service'
+        with patch.object(nsm, 'preflight'):
+            nsm.ops().backup({'action': 'commit', 'token': preview['token']})
+        self.assertEqual(nsm.read_config(), expected)
+        self.assertEqual(history.read_text(), '{"series":{}}')
+        self.assertEqual(nsm.ops().route_test({'service': 'renamed_service', 'name': 'app.example.com'})['pool'], 'application')
+
+    def test_rename_rejects_collisions_invalid_ids_and_wrong_section_types(self):
+        before = nsm.APP_CONFIG.read_bytes()
+        for source, name in [('application', 'application'), ('application', 'node_a'), ('application', 'main'),
+                             ('application', ''), ('application', 'bad-name'), ('application', 'x'*49),
+                             ('application_tcp', 'manager'), ('missing', 'new'), ('node_a', 'new'), ('main', 'new')]:
+            with self.subTest(source=source, name=name), self.assertRaises(nsm.Invalid):
+                nsm.ops().backup({'action': 'rename', 'source': source, 'name': name})
+        self.assertEqual(nsm.APP_CONFIG.read_bytes(), before)
+
+    def test_rename_commit_rejects_running_manager_and_stale_configuration(self):
+        preview = nsm.ops().backup({'action': 'rename', 'source': 'application', 'name': 'new_pool'})
+        before = nsm.APP_CONFIG.read_bytes()
+        with patch.object(nsm, 'pid', return_value=42), self.assertRaisesRegex(nsm.Invalid, 'Stop'):
+            nsm.ops().backup({'action': 'commit', 'token': preview['token']})
+        self.assertEqual(nsm.APP_CONFIG.read_bytes(), before)
+        nsm.APP_CONFIG.write_bytes(before + b'\n')
+        with self.assertRaisesRegex(nsm.Invalid, 'changed'):
+            nsm.ops().backup({'action': 'commit', 'token': preview['token']})
+
     def test_invalid_import_does_not_modify_config(self):
         before = nsm.APP_CONFIG.read_bytes()
         for content in ('{}', '{"format":"nsm-config-1","config":"evil command"}', 'x'*65537):

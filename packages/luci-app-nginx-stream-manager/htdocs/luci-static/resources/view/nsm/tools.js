@@ -37,7 +37,11 @@ return view.extend({
             }) }, _(label));
         }
         commit = button('Commit previewed configuration', function() {
-            return request('commit', '', '', '', token).then(function(r) { invalidate(); status.textContent = r.message; return request('list').then(populate); });
+            return request('commit', '', '', '', token).then(function(r) {
+                invalidate(); status.textContent = r.message;
+                uci.unload('nginx_stream_manager');
+                return Promise.all([request('list').then(populate), uci.load('nginx_stream_manager').then(populateServices)]);
+            });
         }); commit.disabled = true;
         upload.addEventListener('change', function() { invalidate(); var file = upload.files[0]; if (!file) return;
             if (file.size > 65536) { status.textContent = _('Backup exceeds 64 KiB.'); return; }
@@ -45,10 +49,14 @@ return view.extend({
         });
         [snapshots, source, name, text].forEach(function(el) { el.addEventListener('input', invalidate); el.addEventListener('change', invalidate); });
         var services = E('select', { 'aria-label': _('SNI service') }), hostname = E('input', { type: 'text', 'aria-label': _('Test SNI hostname'), placeholder: 'app.example.com' });
-        uci.sections('nginx_stream_manager', 'service', function(s) { if (s.routing === 'sni') services.appendChild(E('option', { value: s['.name'] }, s.name || s['.name'])); });
+        function populateServices() {
+            services.replaceChildren();
+            uci.sections('nginx_stream_manager', 'service', function(s) { if (s.routing === 'sni') services.appendChild(E('option', { value: s['.name'] }, s.name || s['.name'])); });
+        }
+        populateServices();
         var result = E('p', { role: 'status' });
         populate(initial[0]);
-        return E('div', {}, [E('h2', {}, _('Configuration tools')), E('p', {}, _('Up to 10 distinct snapshots, including configurations whose Nginx workers started successfully. This does not prove end-to-end forwarding. Restoring, importing and duplicating require a stopped manager and no pending LuCI edits. Backups contain settings and file paths, not certificates or keys.')),
+        return E('div', {}, [E('h2', {}, _('Configuration tools')), E('p', {}, _('Up to 10 distinct snapshots, including configurations whose Nginx workers started successfully. This does not prove end-to-end forwarding. Restoring, importing, duplicating and renaming require a stopped manager and no pending LuCI edits. Backups contain settings and file paths, not certificates or keys.')),
             status, E('h3', {}, _('History and backup')), E('div', { style: 'display:flex;gap:.5em;flex-wrap:wrap' }, [snapshots,
                 button('Compare / restore snapshot', function() { invalidate(); return request('restore', snapshots.value).then(show); }),
                 button('Save snapshot', function() { return request('snapshot').then(function() { status.textContent = _('Snapshot saved.'); return request('list').then(populate); }); }),
@@ -58,8 +66,11 @@ return view.extend({
                 }); })]),
             E('h3', {}, _('Import configuration backup')), upload, text,
             button('Preview import', function() { invalidate(); return request('import', '', '', text.value).then(show); }),
-            E('h3', {}, _('Duplicate service or pool')), E('p', {}, _('Services are copied disabled, including their routes. Pools include copies of their backend entries.')),
-            E('div', {}, [source, name, button('Preview duplicate', function() { invalidate(); return request('duplicate', source.value, name.value).then(show); })]),
+            E('h3', {}, _('Rename or duplicate service or pool')), E('p', {}, _('Enter a unique section ID using 1–48 letters, digits or underscores. Rename updates all backend, service and route references while preserving the display name and enabled state. To change only the display name, use Configuration → Edit.')),
+            E('p', {}, _('Renaming a service starts a new traffic-history identity; existing logs and history are not renamed. Update external scripts using the old ID. Duplicated services are disabled and include their routes; duplicated pools include their backends.')),
+            E('div', {}, [source, name,
+                button('Preview rename', function() { invalidate(); return request('rename', source.value, name.value).then(show); }),
+                button('Preview duplicate', function() { invalidate(); return request('duplicate', source.value, name.value).then(show); })]),
             E('h3', {}, _('Proposed configuration changes')), preview, commit,
             E('h3', {}, _('Test SNI routing')), E('p', {}, _('Uses committed configuration: exact names win, then the longest *.suffix match, then the default pool. A wildcard does not match its bare domain.')),
             E('div', {}, [services, hostname, button('Test route', function() { return testRoute(services.value, hostname.value).then(function(r) {

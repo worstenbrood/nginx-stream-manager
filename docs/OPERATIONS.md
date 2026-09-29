@@ -1,4 +1,4 @@
-# Monitoring and management — 0.5.0
+# Monitoring and management — 0.6.0
 
 This version adds management features around the free TCP/UDP stream module. The Nginx baseline remains 1.26.3. No HTTP reverse-proxy manager has been added.
 
@@ -69,3 +69,20 @@ Restore/import/duplicate first show a proposal. The preview token expires after 
 Routing rules support exact names and `*.example.com`. Priority: exact name, then the longest matching wildcard suffix, then the default pool. `*.example.com` matches subdomains, not `example.com` itself. Regular expressions and suffix wildcards such as `mail.*` are not offered. The SNI test field uses the saved configuration and the same priority rules. See [Nginx map priorities](https://nginx.org/en/docs/stream/ngx_stream_map_module.html).
 
 **Monitoring → Diagnostics** shows the Nginx build, listening sockets, policy rules/return tables, limited DNS checks for configured hostname backends and syntax probes of the actually installed stream module. A module flag in `nginx -V` alone does not prove support. The diagnostics page does not configure routes and cannot establish whether an external backend actually sends replies back through the router.
+
+## Renaming pools and services — 0.6.0
+
+A **display name** is the human-readable label edited under **Configuration → Backend pools / Services → Edit → Display name**. Changing this label keeps the section ID and traffic-history identity unchanged. Save and apply it through the normal configuration form.
+
+A **section ID** is the unique identifier shown in the Name column and used by references, RPC requests, generated configuration and service log/history keys. To change it:
+
+1. Save or discard pending configuration edits in all LuCI sessions, then stop the manager from **Overview**.
+2. Open **Configuration tools → Rename or duplicate service or pool**.
+3. Select the existing pool or service and enter a new unique ID: 1–48 letters, digits or underscores. The service ID `manager` is reserved.
+4. Select **Preview rename** and review the diff. Preview alone changes no saved configuration.
+5. Select **Commit previewed configuration**. Validation and a backup run before the file is replaced. A stale preview, a running manager or a pending service action blocks commit.
+6. Refresh any other open configuration views, review the settings and explicitly start the manager.
+
+Renaming a pool updates its backend references, default service pools and route destinations. Renaming a service updates route ownership. Disabled entries are included. Existing display names, enabled flags, backend IDs and other settings remain unchanged.
+
+Service logs and traffic history are not moved to the new ID. New completed sessions use the new service identity; old records retain the old one and expire under normal retention rules. Update external scripts or monitoring queries that refer to the old ID. Use a display-name edit when you only want a different label without changing these identities.

@@ -20,6 +20,7 @@ for path in scripts:
     subprocess.run(['node', '--check', str(path)], check=True)
 subprocess.run(['node', str(root / 'tests/check_config_ui.js')], check=True)
 subprocess.run(['node', str(root / 'tests/check_traffic_graph.js')], check=True)
+subprocess.run(['node', str(root / 'tests/check_tools_ui.js')], check=True)
 jsons = list(root.glob('packages/luci-*/root/**/*.json'))
 for path in jsons:
     json.loads(path.read_text())

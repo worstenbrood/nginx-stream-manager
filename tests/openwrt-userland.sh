@@ -58,7 +58,7 @@ esac
 [ ! -e /usr/libexec/nginx-stream-manager ]
 [ ! -e /var/run/nginx-stream-manager/state.json ]
 rules="$(nft list chain inet fw4 input)"
-case "$rules" in *nsm-listener-testservice*) echo 'Listener permit remained after uninstall' >&2; exit 1 ;; esac
+case "$rules" in *nsm-listener-testservice*|*nsm-listener-renamed_service*) echo 'Listener permit remained after uninstall' >&2; exit 1 ;; esac
 preserved=0
 for config in /etc/config/nginx_stream_manager /etc/config/nginx_stream_manager.opkg-save /etc/config/nginx_stream_manager.apk-save; do
     if [ -f "$config" ]; then cmp /tmp/nsm-config-before-remove "$config"; preserved=1; break; fi

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 — 2026-09-29
+
+- Rename pool and service section IDs through Configuration tools, with preview, stale-token protection, validation and a backup before commit.
+- Pool renames update backend, service and routing-rule references; service renames update routing-rule references, including disabled entries. Existing display names and enabled states are preserved.
+- Reject duplicate, invalid and reserved service IDs. Renaming requires a stopped manager and no pending configuration edits or service action.
+- Refresh configuration and SNI selectors after committing changes. Clarify the difference between editable display names and section IDs.
+- Service logs and traffic history retain their original identity; external scripts must use the new ID. No automatic history migration or service restart.
+
 ## 0.5.0 — 2026-09-28
 
 - Monitoring with optional TCP, verified TLS and DNS/UDP probes, bounded concurrency, consecutive success/failure thresholds and explicit stale results. Probes do not change forwarding.

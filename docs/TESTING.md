@@ -1,5 +1,15 @@
 # Validation and test status
 
+## Pool and service renaming — 0.6.0
+
+Date: 29 September 2026.
+
+- 136 unit/regression tests passed. New rename coverage checks pool/service reference updates (including disabled entries), preservation of unrelated settings and history, no writes during preview, backups before commit, invalid/colliding/reserved IDs, running-manager rejection and stale previews.
+- Static checks passed for 11 shell scripts plus package hooks, seven LuCI JavaScript files and two JSON files. The actual Configuration tools view passes a JavaScript regression for rename requests, preview invalidation and refreshed configuration/SNI selectors after commit.
+- Real OpenWrt 25.12.5 userspace acceptance passed for manual installation: rename a pool and service through RPC while stopped, inspect updated UCI references, restart, verify TCP/UDP request/reply over IPv4/IPv6, verify renamed firewall permits, stop and uninstall while preserving configuration.
+- Both 0.6.0-r1 APKs built with the official OpenWrt 25.12.5 SDK for mediatek/filogic. Metadata, architecture and payload checks passed, including byte-for-byte comparison of packaged backend and LuCI source. Installation, rename/RPC/start/forwarding tests and uninstall passed using the built APKs. Packages, SHA256SUMS and logs are in `artifacts/0.6.0-openwrt-25.12.5/` (not tracked in Git). No new 24.10.5 IPK was built.
+- No router changes were performed. Container tests use the host kernel and do not validate router reboot or hardware behavior; procd reports unavailable cgroup permissions in Docker. The new LuCI workflow was exercised through a JavaScript view regression, not a new real-browser acceptance run.
+
 ## Monitoring and management — 0.5.0
 
 Date: 28 September 2026.
